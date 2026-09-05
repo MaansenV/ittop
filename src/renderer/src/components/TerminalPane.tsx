@@ -166,6 +166,13 @@ function extractPreview(term: Terminal): string {
   return joined.length > PREVIEW_MAX_LENGTH ? `${joined.slice(0, PREVIEW_MAX_LENGTH)}â€¦` : joined
 }
 
+// Dropped files expose their native path on `File.path` in Electron (plain browsers
+// don't). Quote like Windows Terminal does: double quotes only when shell-unsafe.
+function quoteDropPath(path: string): string {
+  if (!/[\s"'`$&()[\]{};|*?<>!#~]/.test(path)) return path
+  return `"${path.replace(/"/g, '\\"')}"`
+}
+
 const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
   { terminalId, terminalName, workspaceId, visible, isActive, onHeaderDragStart, onHeaderDrop, onHeaderContextMenu },
   rootRef
@@ -223,8 +230,16 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
     // Ctrl+V regardless (PowerShell's PSReadLine does), but breaks paste entirely in programs
     // that expect the terminal to actually deliver pasted text (e.g. Claude Code's UI). Returning
     // false here for Ctrl+V skips xterm's interception so the browser paste proceeds normally.
+    // Same idea for Ctrl+C: xterm maps it to the ETX control byte (0x03), which shells
+    // read as SIGINT / "cancel current line" — so copying a selection with Ctrl+C would
+    // just wipe the input instead. When text is selected, skip xterm's interception so the
+    // browser's native copy runs; without a selection Ctrl+C still goes to the pty (needed
+    // to interrupt running processes). Mirrors Windows Terminal behavior.
     term.attachCustomKeyEventHandler((event) => {
-      if (event.type === 'keydown' && event.ctrlKey && event.key.toLowerCase() === 'v') return false
+      if (event.type !== 'keydown' || !event.ctrlKey) return true
+      const key = event.key.toLowerCase()
+      if (key === 'v') return false
+      if (key === 'c' && term.hasSelection()) return false
       return true
     })
 
@@ -378,7 +393,25 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
           <button onClick={() => setSearchOpen(false)}>âœ•</button>
         </div>
       )}
-      <div className="terminal-container" ref={containerRef} tabIndex={0} />
+      <div
+        className="terminal-container"
+        ref={containerRef}
+        tabIndex={0}
+        onDragOver={(e) => {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = 'copy'
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          const paths = Array.from(e.dataTransfer.files ?? [])
+            .map((f) => (f as File & { path?: string }).path ?? '')
+            .filter((p) => p.length > 0)
+            .map(quoteDropPath)
+          if (paths.length === 0) return
+          window.api.ptyInput(terminalId, paths.join(' '))
+          termRef.current?.focus()
+        }}
+      />
     </div>
   )
 })

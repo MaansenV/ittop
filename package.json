@@ -1,11 +1,11 @@
 {
   "name": "ittop",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Multi-workspace manager for Claude Code, Codex, Gemini CLI, and other terminal-based coding agents on Windows: run multiple parallel sessions with live status and a built-in file preview, built for vibe coding.",
   "main": "./out/main/index.js",
   "author": "pottz91",
   "license": "MIT",
-  "repository": "https://github.com/pottz91/ittop",
+  "repository": "https://github.com/MaansenV/ittop",
   "private": true,
   "scripts": {
     "format": "prettier --write .",

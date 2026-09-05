@@ -2,11 +2,11 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform: Windows | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D6.svg)](#prerequisites)
-[![Latest release](https://img.shields.io/github/v/release/pottz91/ittop)](https://github.com/pottz91/ittop/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/pottz91/ittop/total)](https://github.com/pottz91/ittop/releases/latest)
-[![VirusTotal](https://img.shields.io/badge/VirusTotal-scanned-brightgreen?logo=virustotal&logoColor=white)](https://github.com/pottz91/ittop/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/MaansenV/ittop)](https://github.com/MaansenV/ittop/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/MaansenV/ittop/total)](https://github.com/MaansenV/ittop/releases/latest)
+[![VirusTotal](https://img.shields.io/badge/VirusTotal-scanned-brightgreen?logo=virustotal&logoColor=white)](https://github.com/MaansenV/ittop/releases/latest)
 
-### 📥 [Download the latest installer](https://github.com/pottz91/ittop/releases/latest)
+### 📥 [Download the latest installer](https://github.com/MaansenV/ittop/releases/latest)
 
 <p align="center"><img src="docs/demo.gif" alt="ittop demo" width="900"></p>
 
@@ -98,7 +98,7 @@ only need them if you ever have to compile `node-pty` from source (see
 
 ## Getting started
 
-**Just want to use it?** Download the installer from [Releases](https://github.com/pottz91/ittop/releases/latest),
+**Just want to use it?** Download the installer from [Releases](https://github.com/MaansenV/ittop/releases/latest),
 run it, done. `npm install` is only needed if you're building from source.
 
 🛡️ Every Windows installer is scanned with [VirusTotal](https://www.virustotal.com/) right
