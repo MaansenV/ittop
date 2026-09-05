@@ -958,6 +958,13 @@ body,
 .terminal-container {
   flex: 1;
   min-height: 0;
+}
+
+/* Padding belongs on the .xterm element itself, not this container: FitAddon measures
+   the container via getComputedStyle() (border-box, padding included) but subtracts
+   only the .xterm element's own padding. With the padding here the grid is computed
+   8px too tall / 16px too wide -> last row and right edge clipped by the pane. */
+.terminal-container .xterm {
   padding: 6px 8px 2px;
 }
 
