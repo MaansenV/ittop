@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  # Runs once on a cheap runner: validates the build, then pre-creates the GitHub release so
+  # the Windows and macOS build jobs below only ever have to upload assets to it. Without this,
+  # electron-builder can race when two platform jobs try to create the same release in parallel
+  # (the second POST fails with 422 already_exists), aborting before all assets upload.
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - name: Ensure GitHub release exists
+        run: |
+          if ! gh release view "${{ github.ref_name }}" --repo ${{ github.repository }}; then
+            gh release create "${{ github.ref_name }}" --repo ${{ github.repository }} --title "${{ github.ref_name }}" --notes ""
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows:
+    needs: prepare
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    # `secrets.*` isn't a recognized named-value inside step `if:` conditions (GitHub Actions
+    # error: "Unrecognized named-value: 'secrets'"). Mirror it into a job-level env var instead
+    # so the VirusTotal step can conditionally skip when the secret isn't configured.
+    env:
+      VT_API_KEY: ${{ secrets.VT_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - name: Build and publish (Windows)
+        run: npm run build:win -- --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan installer with VirusTotal
+        id: virustotal
+        if: env.VT_API_KEY != ''
+        run: |
+          $installer = Get-ChildItem -Path dist -Filter *-setup.exe | Select-Object -First 1 -ExpandProperty FullName
+          node scripts/scan-virustotal.mjs "$installer" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+
+      - name: Link VirusTotal report in the release notes
+        if: steps.virustotal.outputs.vt_report_url
+        run: |
+          gh release edit "${{ github.ref_name }}" --notes "Installer scanned with VirusTotal: ${{ steps.virustotal.outputs.vt_report_url }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-mac:
+    needs: prepare
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      # No Apple Developer ID configured, so this build is ad-hoc signed only, not notarized
+      # (see electron-builder.yml `mac` section). CSC_IDENTITY_AUTO_DISCOVERY=false stops
+      # electron-builder from looking for a real keychain certificate that doesn't exist on this
+      # runner, so it falls back to ad-hoc signing instead of erroring or leaving it unsigned.
+      # Gatekeeper still shows "unidentified developer" on first open; see README.
+      - name: Build and publish (macOS)
+        run: npm run build:mac -- --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
