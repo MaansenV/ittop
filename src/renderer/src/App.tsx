@@ -131,7 +131,7 @@ export default function App(): React.JSX.Element {
         setShortcutsOpen(false)
         return
       }
-      // Quick workspace switching with the arrow keys â€” but never while a terminal or text
+      // Quick workspace switching with the arrow keys — but never while a terminal or text
       // field has focus, since shells rely on Up/Down for command history.
       if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !isTypingTarget(event.target)) {
         if (workspaces.length === 0) return
@@ -174,7 +174,7 @@ export default function App(): React.JSX.Element {
   }
 
   // Every opened workspace's terminals stay mounted (so their pty/scrollback survive switching
-  // away) â€” only the active workspace's terminals are actually shown, tiled together in the
+  // away) — only the active workspace's terminals are actually shown, tiled together in the
   // arrangement the user set up for that workspace.
   const mountedTerminals = useMemo(
     () =>
@@ -308,7 +308,7 @@ export default function App(): React.JSX.Element {
           <div className="empty-main">
             <div className="empty-main-mark">&gt;_</div>
             <p>Select a workspace to start its sessions</p>
-            <p className="empty-main-sub">Click one in the sidebar, or press Ctrl+1â€¦9.</p>
+            <p className="empty-main-sub">Click one in the sidebar, or press Ctrl+1…9.</p>
           </div>
         )}
         <div className="panes" ref={panesRef} style={gridStyle}>
@@ -355,7 +355,7 @@ export default function App(): React.JSX.Element {
                 updateAppSettings({ paneColFractions: evenFractions })
               }}
             >
-              âŠž Reset layout
+              ⊞ Reset layout
             </button>
           )}
           <button className="auto-arrange-button" title="Keyboard shortcuts (?)" onClick={() => setShortcutsOpen(true)}>
@@ -366,7 +366,7 @@ export default function App(): React.JSX.Element {
             title="Toggle file explorer for the focused terminal"
             onClick={() => setFilesOpen((open) => !open)}
           >
-            ðŸ“ Files
+            📁 Files
           </button>
         </div>
       </div>

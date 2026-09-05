@@ -36,7 +36,7 @@ function TreeNode({
         style={{ paddingLeft: 10 + depth * 14 }}
         onClick={() => (entry.isDirectory ? onToggle(entry.path) : onSelectFile(entry.path))}
       >
-        <span className="file-tree-chevron">{entry.isDirectory ? (isOpen ? 'â–¾' : 'â–¸') : ''}</span>
+        <span className="file-tree-chevron">{entry.isDirectory ? (isOpen ? '▾' : '▸') : ''}</span>
         <span className="file-tree-icon">
           <FileIcon name={entry.name} isDirectory={entry.isDirectory} isOpen={isOpen} />
         </span>
@@ -44,7 +44,7 @@ function TreeNode({
       </div>
       {isOpen && dirState?.status === 'loading' && (
         <div className="file-tree-hint" style={{ paddingLeft: 24 + depth * 14 }}>
-          Loadingâ€¦
+          Loading…
         </div>
       )}
       {isOpen && dirState?.status === 'error' && (
@@ -155,7 +155,7 @@ export default function FileExplorer({ onClose }: Props): React.JSX.Element {
       <div className="file-panel-header">
         {selectedPath ? (
           <button className="file-panel-back" onClick={() => setSelectedPath(null)} title="Back to tree">
-            â† {fileName(selectedPath)}
+            ← {fileName(selectedPath)}
           </button>
         ) : (
           <span className="file-panel-title">{panelTitle}</span>
@@ -167,11 +167,11 @@ export default function FileExplorer({ onClose }: Props): React.JSX.Element {
               title="Open in a separate window"
               onClick={() => void window.api.openFilePreviewWindow(selectedPath)}
             >
-              â¤¢
+              ⤢
             </button>
           )}
           <button className="icon-button small" title="Close" onClick={onClose}>
-            âœ•
+            ✕
           </button>
         </div>
       </div>
@@ -182,7 +182,7 @@ export default function FileExplorer({ onClose }: Props): React.JSX.Element {
       )}
       {rootPath && !selectedPath && (
         <div className="file-tree">
-          {rootEntries?.status === 'loading' && <div className="file-tree-hint">Loadingâ€¦</div>}
+          {rootEntries?.status === 'loading' && <div className="file-tree-hint">Loading…</div>}
           {rootEntries?.status === 'error' && <div className="file-tree-hint">{rootEntries.message}</div>}
           {rootEntries?.status === 'ready' &&
             rootEntries.entries.map((entry) => (

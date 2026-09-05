@@ -9,6 +9,10 @@ import { useAppStore } from '../store/useAppStore'
 import type { AppTheme } from '../../../shared/types'
 
 const SCROLLBACK_LINES = 10000
+// ConPTY repaints the entire screen on every resize — even to identical dimensions — and TUIs
+// then re-emit their whole UI, piling the old screen up in scrollback as repeated lines.
+// Resize bursts (divider drags, window resizes) therefore settle to ONE pty resize.
+const RESIZE_DEBOUNCE_MS = 120
 
 interface Props {
   terminalId: string
@@ -36,7 +40,7 @@ const PREVIEW_MAX_LENGTH = 160
 
 // The 16 ANSI colors matter as much as background/foreground: Claude Code's own box-drawing
 // and status text use them directly, and xterm's built-in defaults are tuned for dark
-// backgrounds â€” on white (or a mismatched preset) they read as low-contrast/washed out
+// backgrounds — on white (or a mismatched preset) they read as low-contrast/washed out
 // without an explicit palette matching each theme.
 const XTERM_THEMES: Record<AppTheme, ITheme> = {
   light: {
@@ -163,7 +167,7 @@ function extractPreview(term: Terminal): string {
     lines.unshift(text)
   }
   const joined = lines.join('  ').replace(/\s+/g, ' ').trim()
-  return joined.length > PREVIEW_MAX_LENGTH ? `${joined.slice(0, PREVIEW_MAX_LENGTH)}â€¦` : joined
+  return joined.length > PREVIEW_MAX_LENGTH ? `${joined.slice(0, PREVIEW_MAX_LENGTH)}…` : joined
 }
 
 // Dropped files expose their native path on `File.path` in Electron (plain browsers
@@ -214,7 +218,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
     // internally. It carries no ARIA semantics out of the box, so OS-level dictation tools
     // (Wispr Flow, Windows Voice Access, ...) that inject text via the accessibility tree's
     // text-input pattern often can't identify it as an editable field even while it has focus.
-    // Explicitly marking it as a textbox is a best-effort fix â€” some tools also skip elements
+    // Explicitly marking it as a textbox is a best-effort fix — some tools also skip elements
     // with no visible bounding box, which this can't change without altering xterm's rendering.
     const helperTextarea = containerRef.current.querySelector('.xterm-helper-textarea')
     if (helperTextarea) {
@@ -224,7 +228,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
     }
 
     // xterm.js's own key handling maps Ctrl+V to the raw Unix "literal next character" control
-    // byte (0x16) and calls preventDefault() on the keydown â€” which blocks the browser's native
+    // byte (0x16) and calls preventDefault() on the keydown — which blocks the browser's native
     // paste (the ClipboardEvent) from ever firing, so xterm's own bracketed-paste text-wrapping
     // never runs. That's invisible in shells whose readline reads the OS clipboard itself on
     // Ctrl+V regardless (PowerShell's PSReadLine does), but breaks paste entirely in programs
@@ -249,17 +253,29 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
 
     // A hidden pane (display:none) reports a 0x0 box. Fitting/resizing xterm to 0 rows/cols
     // forces it to reflow (and lose) wrapped lines; when the pane becomes visible again the
-    // reflow-back-up leaves stale/ghosted fragments behind â€” this, not the renderer, was the
+    // reflow-back-up leaves stale/ghosted fragments behind — this, not the renderer, was the
     // cause of text appearing to "shift" while scrolling. Never fit while degenerate-sized.
+    // Never call ptyResize with unchanged dims (ConPTY repaints anyway) and debounce bursts.
+    let lastPtyCols = -1
+    let lastPtyRows = -1
     const safeFit = (): void => {
       const el = containerRef.current
       if (!el || el.clientWidth === 0 || el.clientHeight === 0) return
       try {
         fitAddon.fit()
-        window.api.ptyResize(terminalId, term.cols, term.rows)
+        if (term.cols !== lastPtyCols || term.rows !== lastPtyRows) {
+          lastPtyCols = term.cols
+          lastPtyRows = term.rows
+          window.api.ptyResize(terminalId, term.cols, term.rows)
+        }
       } catch {
         // ignore transient resize errors
       }
+    }
+    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null
+    const debouncedSafeFit = (): void => {
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer)
+      resizeDebounceTimer = setTimeout(safeFit, RESIZE_DEBOUNCE_MS)
     }
 
     // xterm's internal renderer finishes initializing on the next animation frame after
@@ -288,13 +304,15 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
     })
 
     // The green "active" ring should follow real keyboard focus, not just the last sidebar
-    // click â€” typing directly into a pinned-but-inactive pane should make it the active one.
+    // click — typing directly into a pinned-but-inactive pane should make it the active one.
     // xterm.js exposes no focus event on the Terminal itself; 'focusin' bubbles from its
     // internal hidden textarea, unlike the non-bubbling native 'focus' event.
     const focusHandler = (): void => focusTerminal(terminalId)
     containerRef.current.addEventListener('focusin', focusHandler)
 
-    const resizeObserver = new ResizeObserver(() => safeFit())
+    // Debounced: RO fires continuously while the user drags a column divider or resizes the
+    // window; each real pty resize triggers a full ConPTY repaint (see RESIZE_DEBOUNCE_MS).
+    const resizeObserver = new ResizeObserver(() => debouncedSafeFit())
     resizeObserver.observe(containerRef.current)
 
     const keydownHandler = (event: KeyboardEvent): void => {
@@ -309,6 +327,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
       cancelAnimationFrame(rafId)
       rendererReadyRef.current = false
       if (previewTimer) clearTimeout(previewTimer)
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer)
       dataDispose.dispose()
       unsubscribePtyData()
       resizeObserver.disconnect()
@@ -321,7 +340,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
   }, [terminalId])
 
   useEffect(() => {
-    // Skip while the renderer isn't ready yet (e.g. the very first run right after mount) â€”
+    // Skip while the renderer isn't ready yet (e.g. the very first run right after mount) —
     // the constructor already received the correct theme; setting options.theme before xterm's
     // internal renderer initializes can throw, same as fitting/resizing too early.
     if (!termRef.current || !rendererReadyRef.current) return
@@ -329,22 +348,11 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
   }, [theme])
 
   useEffect(() => {
-    if (visible) {
-      requestAnimationFrame(() => {
-        const el = containerRef.current
-        if (el && el.clientWidth > 0 && el.clientHeight > 0) {
-          try {
-            fitAddonRef.current?.fit()
-          } catch {
-            // ignore
-          }
-        }
-        // Only steal focus (and, via the focusin handler above, active status) when this pane
-        // is actually the active one. Pinning a second pane makes it visible without making it
-        // active â€” auto-focusing it here would immediately flip active back to it and hide the
-        // pane that's supposed to stay active, defeating the pin.
-        if (isActive) termRef.current?.focus()
-      })
+    if (visible && isActive) {
+      // Sizing on visibility change is handled by the ResizeObserver (the pane's box goes
+      // 0x0 -> real size) + safeFit, which keeps xterm cols and the pty in sync. Fitting here
+      // too would resize xterm without the pty and desync the line wrap (ghost fragments).
+      requestAnimationFrame(() => termRef.current?.focus())
     }
   }, [visible, isActive])
 
@@ -371,14 +379,14 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
       >
         <span className={statusDotClass(status)} />
         <span className="terminal-pane-title">{terminalName}</span>
-        {gitBranch && <span className="terminal-pane-branch">âŽ‡ {gitBranch}</span>}
+        {gitBranch && <span className="terminal-pane-branch">⎇ {gitBranch}</span>}
       </div>
       {searchOpen && (
         <div className="terminal-search-bar">
           <input
             autoFocus
             value={searchQuery}
-            placeholder="Search terminalâ€¦"
+            placeholder="Search terminal…"
             onChange={(e) => {
               setSearchQuery(e.target.value)
               searchAddonRef.current?.findNext(e.target.value)
@@ -390,7 +398,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
           />
           <button onClick={() => searchAddonRef.current?.findPrevious(searchQuery)}>Prev</button>
           <button onClick={() => searchAddonRef.current?.findNext(searchQuery)}>Next</button>
-          <button onClick={() => setSearchOpen(false)}>âœ•</button>
+          <button onClick={() => setSearchOpen(false)}>✕</button>
         </div>
       )}
       <div

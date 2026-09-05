@@ -44,7 +44,7 @@ export default function ImportPreviewModal({
                 <div className="import-preview-path">{entry.projectPath}</div>
                 {entry.terminals.map((t, ti) => (
                   <div key={ti} className="import-preview-terminal">
-                    <div className="import-preview-path">{t.name} â€” {t.projectPath}</div>
+                    <div className="import-preview-path">{t.name} — {t.projectPath}</div>
                     <div className="import-preview-command">
                       <span className="shortcuts-keys">$</span> {t.startCommand}
                     </div>

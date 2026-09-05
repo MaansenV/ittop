@@ -47,7 +47,7 @@ test.describe('workspace lifecycle', () => {
     await addTerminal(window, 'E2E Test Workspace', 'Main', 'echo hello-e2e')
 
     await expect(window.locator('.terminal-pane .terminal-pane-title')).toContainText('Main')
-    // The pty actually starts and the shell prints something â€” proves the IPC round trip
+    // The pty actually starts and the shell prints something — proves the IPC round trip
     // (renderer -> main -> node-pty -> back to renderer) works end to end, not just the UI shell.
     await expect(window.locator('.xterm-screen')).toContainText('hello-e2e', { timeout: 15_000 })
   })
@@ -59,7 +59,7 @@ test.describe('multi-terminal workspace and settings', () => {
   test.beforeAll(async () => {
     ctx = await launchApp()
     await createWorkspace(ctx.window, 'Multi Workspace')
-    // Explicit harmless commands â€” the dialog otherwise defaults to the real "claude" CLI,
+    // Explicit harmless commands — the dialog otherwise defaults to the real "claude" CLI,
     // which is slow/network-dependent and has no place in a fast, deterministic test.
     await addTerminal(ctx.window, 'Multi Workspace', 'Terminal A', 'echo terminal-a-ready')
     await addTerminal(ctx.window, 'Multi Workspace', 'Terminal B', 'echo terminal-b-ready')

@@ -909,7 +909,7 @@ body,
   border-color: color-mix(in srgb, var(--mono-accent) 45%, var(--border));
 }
 
-/* xterm.js keeps its hidden input textarea at width:0/height:0 outside of IME composition â€”
+/* xterm.js keeps its hidden input textarea at width:0/height:0 outside of IME composition —
    the JS side already tracks its left/top to the real cursor position, but the degenerate
    0x0 size makes many OS-level dictation tools (which inject text via the accessibility
    tree's bounding rect, not just simulated keystrokes) treat it as an invisible, unusable
