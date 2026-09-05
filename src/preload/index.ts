@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC } from '../shared/types'
 import type {
   AppSettings,
@@ -51,6 +51,16 @@ const api = {
     ipcRenderer.invoke(IPC.settingsUpdate, patch),
 
   getHookServerInfo: (): Promise<{ port: number }> => ipcRenderer.invoke(IPC.hookServerInfo),
+
+  // File.path was removed in Electron 32; only the preload can resolve a File back to a
+  // real filesystem path (drag-drop and clipboard file paste both need this).
+  getPathForFile: (file: File): string => {
+    try {
+      return webUtils.getPathForFile(file)
+    } catch {
+      return ''
+    }
+  },
 
   listDir: (path: string): Promise<ListDirResult> => ipcRenderer.invoke(IPC.fsListDir, path),
   readFile: (path: string): Promise<ReadFileResult> => ipcRenderer.invoke(IPC.fsReadFile, path),

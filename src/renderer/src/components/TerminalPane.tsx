@@ -323,6 +323,23 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
     }
     containerRef.current.addEventListener('keydown', keydownHandler)
 
+    // Pasting a file copied in Explorer (e.g. an image) puts no text on the clipboard —
+    // the browser paste event carries it in clipboardData.files. Convert those to quoted
+    // filesystem paths like Windows Terminal does. Text-only pastes are left to xterm's
+    // own bracketed-paste handling.
+    const pasteHandler = (event: ClipboardEvent): void => {
+      const files = Array.from(event.clipboardData?.files ?? [])
+      if (files.length === 0) return
+      const paths = files
+        .map((f) => window.api.getPathForFile(f))
+        .filter((p) => p.length > 0)
+        .map(quoteDropPath)
+      if (paths.length === 0) return
+      event.preventDefault()
+      window.api.ptyInput(terminalId, paths.join(' '))
+    }
+    containerRef.current.addEventListener('paste', pasteHandler)
+
     return () => {
       cancelAnimationFrame(rafId)
       rendererReadyRef.current = false
@@ -332,6 +349,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
       unsubscribePtyData()
       resizeObserver.disconnect()
       containerRef.current?.removeEventListener('keydown', keydownHandler)
+      containerRef.current?.removeEventListener('paste', pasteHandler)
       containerRef.current?.removeEventListener('focusin', focusHandler)
       term.dispose()
       termRef.current = null
@@ -412,7 +430,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
         onDrop={(e) => {
           e.preventDefault()
           const paths = Array.from(e.dataTransfer.files ?? [])
-            .map((f) => (f as File & { path?: string }).path ?? '')
+            .map((f) => window.api.getPathForFile(f))
             .filter((p) => p.length > 0)
             .map(quoteDropPath)
           if (paths.length === 0) return
