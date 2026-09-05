@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+﻿import { useMemo, useRef, useState } from 'react'
 import type { Terminal, TerminalStatus, Workspace } from '../../../shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { useNow } from '../hooks/useNow'
@@ -29,7 +29,7 @@ function aggregateStatus(statuses: TerminalStatus[]): TerminalStatus {
 
 function shortenPath(path: string): string {
   if (path.length <= 42) return path
-  return `…${path.slice(-40)}`
+  return `â€¦${path.slice(-40)}`
 }
 
 function matches(query: string, ...fields: Array<string | null | undefined>): boolean {
@@ -91,7 +91,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
       try {
         localStorage.setItem('ittop.collapsedWorkspaces', JSON.stringify([...next]))
       } catch {
-        // localStorage unavailable — collapse state just won't persist across restarts
+        // localStorage unavailable â€” collapse state just won't persist across restarts
       }
       return next
     })
@@ -174,7 +174,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
       workspaces.filter((w) =>
         matches(
           searchQuery,
-          w.name,
+          w.name, w.projectPath,
           ...w.terminals.flatMap((t) => [t.name, t.projectPath, previews[t.id]])
         )
       ),
@@ -184,7 +184,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
   const workspacesList = useMemo(
     () =>
       workspaces.filter((w) =>
-        matches(searchQuery, w.name, ...w.terminals.flatMap((t) => [t.name, t.projectPath]))
+        matches(searchQuery, w.name, w.projectPath, ...w.terminals.flatMap((t) => [t.name, t.projectPath]))
       ),
     [workspaces, searchQuery]
   )
@@ -193,7 +193,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
     return (
       <div className="sidebar collapsed">
         <button className="icon-button" title="Expand sidebar" onClick={toggleSidebarCollapsed}>
-          »
+          Â»
         </button>
         <div className="workspace-list collapsed-list">
           {workspaces.map((workspace, index) => {
@@ -204,7 +204,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
               <button
                 key={workspace.id}
                 className={`collapsed-item${isActive ? ' active' : ''}`}
-                title={workspace.name}
+                title={workspace.projectPath || workspace.name}
                 onClick={() => openWorkspace(workspace.id)}
               >
                 <span className={statusClass(status)} />
@@ -240,10 +240,10 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
         </div>
         <div className="sidebar-header-actions">
           <button className="icon-button" title="Settings" onClick={() => setSettingsOpen(true)}>
-            ⚙
+            âš™
           </button>
           <button className="icon-button" title="Collapse sidebar" onClick={toggleSidebarCollapsed}>
-            «
+            Â«
           </button>
           <button className="icon-button" title="New workspace (Ctrl+N)" onClick={onNewWorkspace}>
             +
@@ -255,7 +255,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Filter workspaces…"
+            placeholder="Filter workspacesâ€¦"
           />
         </div>
       )}
@@ -277,7 +277,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                 key={workspace.id}
                 className={`workspace-item activity-item${isActive ? ' active' : ''}`}
                 onClick={() => openWorkspace(workspace.id)}
-                title={workspace.name}
+                title={workspace.projectPath || workspace.name}
               >
                 <span className={statusClass(status)} />
                 <div className="workspace-info">
@@ -322,7 +322,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={() => handleDrop(workspace.id)}
                   onClick={() => openWorkspace(workspace.id)}
-                  title={workspace.name}
+                  title={workspace.projectPath || workspace.name}
                 >
                   <button
                     className={`group-chevron-button${isCollapsed ? ' collapsed' : ''}`}
@@ -332,7 +332,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                     }}
                     title={isCollapsed ? 'Expand' : 'Collapse'}
                   >
-                    ▾
+                    â–¾
                   </button>
                   <span className={statusClass(status)} />
                   <div className="workspace-info">
@@ -362,6 +362,11 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                         <span className="group-count">{workspace.terminals.length}</span>
                       </div>
                     )}
+                    {workspace.projectPath && (
+                    <div className="workspace-meta">
+                      <span className="workspace-path">{shortenPath(workspace.projectPath)}</span>
+                    </div>
+                    )}
                   </div>
                   {unread > 0 && <span className="unread-badge">{unread}</span>}
                   <div className="workspace-actions" onClick={(e) => e.stopPropagation()}>
@@ -377,7 +382,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                       title="Delete workspace"
                       onClick={() => setConfirmDeleteWorkspace(workspace)}
                     >
-                      ✕
+                      âœ•
                     </button>
                   </div>
                 </div>
@@ -390,7 +395,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                         key={terminal.id}
                         className="terminal-item"
                         onClick={() => focusTerminal(terminal.id)}
-                        title={terminal.projectPath}
+                        title={workspace.projectPath || terminal.projectPath}
                       >
                         <span className={statusClass(rt?.status ?? 'idle')} />
                         <div className="workspace-info">
@@ -419,8 +424,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                             </div>
                           )}
                           <div className="workspace-meta">
-                            <span className="workspace-path">{shortenPath(terminal.projectPath)}</span>
-                            {branch && <span className="workspace-branch">⎇ {branch}</span>}
+                            {branch && <span className="workspace-branch">âŽ‡ {branch}</span>}
                           </div>
                         </div>
                         {(rt?.unreadCount ?? 0) > 0 && <span className="unread-badge">{rt.unreadCount}</span>}
@@ -430,7 +434,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                             title="Delete terminal"
                             onClick={() => setConfirmDeleteTerminal({ workspaceId: workspace.id, terminal })}
                           >
-                            ✕
+                            âœ•
                           </button>
                         </div>
                       </div>

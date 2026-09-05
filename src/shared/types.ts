@@ -11,6 +11,7 @@ export interface Terminal {
 export interface Workspace {
   id: string
   name: string
+  projectPath: string
   order: number
   terminals: Terminal[]
 }
@@ -52,12 +53,13 @@ export interface PersistedState {
 
 export interface CreateWorkspaceInput {
   name: string
+  projectPath: string
 }
 
 export interface CreateTerminalInput {
   workspaceId: string
   name: string
-  projectPath: string
+  projectPath?: string
   startCommand?: string
 }
 
@@ -132,6 +134,7 @@ export const IPC = {
 
 export interface ImportPreviewEntry {
   name: string
+  projectPath: string
   terminals: Array<{ name: string; projectPath: string; startCommand: string }>
 }
 

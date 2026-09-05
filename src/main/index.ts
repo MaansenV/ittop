@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, Notification, session, Tray, Menu, nativeImage } from 'electron'
+﻿import { app, shell, BrowserWindow, ipcMain, dialog, Notification, session, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
 import { readFileSync, writeFileSync, promises as fsPromises } from 'fs'
@@ -36,7 +36,7 @@ if (process.env.ITTOP_USER_DATA_DIR) {
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
-// ittop's whole point is keeping sessions alive in the background — closing the window (the X
+// ittop's whole point is keeping sessions alive in the background â€” closing the window (the X
 // button, Alt+F4, ...) minimizes to the tray instead of quitting. This flag distinguishes that
 // from a real quit (tray menu "Quit", or the app quitting for another reason), so the window's
 // own 'close' handler knows whether to hide or actually let the close proceed.
@@ -173,7 +173,7 @@ statusManager.onChange((terminalId, status) => {
   })
 })
 
-// The origin our own renderer is ever legitimately loaded from — either the Vite dev server or
+// The origin our own renderer is ever legitimately loaded from â€” either the Vite dev server or
 // the packaged index.html. Anything a window tries to navigate to that isn't this exact prefix
 // is untrusted content (e.g. a link clicked inside a previewed Markdown/HTML file) and must not
 // be allowed to load in-place, since our preload script re-injects on every navigation and
@@ -231,7 +231,7 @@ function createWindow(): void {
     if (!mainWindow) return
     const maximized = mainWindow.isMaximized()
     // getBounds() while maximized returns the maximized size, not the restorable windowed
-    // size — save the pre-maximize bounds instead so un-maximizing later isn't full-screen.
+    // size â€” save the pre-maximize bounds instead so un-maximizing later isn't full-screen.
     const { x, y, width, height } = maximized ? mainWindow.getNormalBounds() : mainWindow.getBounds()
     persistSettings({ windowBounds: { x, y, width, height, maximized } })
 
@@ -315,6 +315,7 @@ function registerIpcHandlers(): void {
     const workspace: Workspace = {
       id: uuidv4(),
       name: input.name,
+      projectPath: input.projectPath?.trim() ?? '',
       order: state.workspaces.length,
       terminals: []
     }
@@ -361,10 +362,14 @@ function registerIpcHandlers(): void {
     const state = store.getState()
     const workspace = state.workspaces.find((w) => w.id === input.workspaceId)
     if (!workspace) return null
+    // Source of truth is the workspace folder â€” new terminals inherit it. The optional
+    // client-supplied projectPath is only a fallback for old callers.
+    const projectPath = workspace.projectPath || input.projectPath?.trim() || ''
+    if (!projectPath) return null
     const terminal: Terminal = {
       id: uuidv4(),
       name: input.name,
-      projectPath: input.projectPath,
+      projectPath,
       startCommand: input.startCommand?.trim() || state.settings.defaultStartCommand || 'claude',
       order: workspace.terminals.length
     }
@@ -438,10 +443,10 @@ function registerIpcHandlers(): void {
     try {
       const state = store.getState()
       // version 3: nested workspaces (each carrying its terminals) plus the restorable
-      // preference subset (never window/layout/session state — see RestorableSettings) so a
+      // preference subset (never window/layout/session state â€” see RestorableSettings) so a
       // full export/import round-trip can bring those back too, opt-in.
       const payload = {
-        version: 3,
+        version: 4,
         workspaces: state.workspaces,
         settings: {
           theme: state.settings.theme,
@@ -458,7 +463,7 @@ function registerIpcHandlers(): void {
   })
 
   // Import is a two-step prepare/commit flow so the renderer can show the user exactly what
-  // each imported workspace and its terminals will run before anything is added — importing a
+  // each imported workspace and its terminals will run before anything is added â€” importing a
   // config someone else wrote otherwise auto-runs their chosen shell commands with no visibility.
   ipcMain.handle(IPC.workspacesImportPrepare, async (): Promise<ImportPrepareResult> => {
     if (!mainWindow) return { ok: false, reason: 'error', message: 'No window available.' }
@@ -495,12 +500,16 @@ function registerIpcHandlers(): void {
                 projectPath: path,
                 startCommand: asString(t.startCommand) || defaultCmd
               }))
-            return terminals.length > 0 ? { name, terminals } : null
+            if (terminals.length === 0) return null
+            const workspacePath = asString(w.projectPath) || terminals[0].projectPath
+            const normalized = terminals.map((t) => ({ ...t, projectPath: t.projectPath || workspacePath }))
+            return { name, projectPath: workspacePath, terminals: normalized }
           }
           const projectPath = asString(w.projectPath)
           if (!projectPath) return null
           return {
             name,
+            projectPath,
             terminals: [{ name, projectPath, startCommand: asString(w.startCommand) || defaultCmd }]
           }
         })
@@ -542,18 +551,22 @@ function registerIpcHandlers(): void {
   ipcMain.handle(IPC.workspacesImportCommit, (_event, input: ImportCommitInput): ImportCommitResult => {
     try {
       const state = store.getState()
-      const imported: Workspace[] = input.entries.map((entry, i) => ({
+      const imported: Workspace[] = input.entries.map((entry, i) => {
+        const workspacePath = entry.projectPath || entry.terminals[0]?.projectPath || ''
+        return {
         id: uuidv4(),
         name: entry.name,
+        projectPath: workspacePath,
         order: state.workspaces.length + i,
         terminals: entry.terminals.map((t, ti) => ({
           id: uuidv4(),
           name: t.name,
-          projectPath: t.projectPath,
+          projectPath: t.projectPath || workspacePath,
           startCommand: t.startCommand,
           order: ti
         }))
-      }))
+        }
+      })
       const settings = input.settings ? { ...state.settings, ...input.settings } : state.settings
       store.save({ ...state, workspaces: [...state.workspaces, ...imported], settings })
       return { ok: true, count: imported.length }
@@ -667,7 +680,7 @@ app.whenReady().then(() => {
   createWindow()
   createTray()
 
-  // Silent background check a few seconds after launch — errors/no-update states are only
+  // Silent background check a few seconds after launch â€” errors/no-update states are only
   // surfaced when the user opens Settings themselves, this just gets the "update available"
   // notice in front of them without requiring a manual click every time.
   setTimeout(() => void updater.checkForUpdates(), 5000)

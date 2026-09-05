@@ -1,4 +1,4 @@
-* {
+﻿* {
   box-sizing: border-box;
 }
 
@@ -623,12 +623,13 @@ body,
 }
 
 .main-toolbar {
-  position: absolute;
-  top: 8px;
-  right: 16px;
-  z-index: 5;
   display: flex;
   gap: 6px;
+  justify-content: flex-start;
+  align-items: center;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
 }
 
 .auto-arrange-button {
@@ -908,7 +909,7 @@ body,
   border-color: color-mix(in srgb, var(--mono-accent) 45%, var(--border));
 }
 
-/* xterm.js keeps its hidden input textarea at width:0/height:0 outside of IME composition —
+/* xterm.js keeps its hidden input textarea at width:0/height:0 outside of IME composition â€”
    the JS side already tracks its left/top to the real cursor position, but the degenerate
    0x0 size makes many OS-level dictation tools (which inject text via the accessibility
    tree's bounding rect, not just simulated keystrokes) treat it as an invisible, unusable
@@ -1452,4 +1453,33 @@ button {
   margin: 8px 0 0;
   font-size: 11.5px;
   color: var(--text-dim);
+}
+
+.pane-context-menu {
+  position: fixed;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.pane-context-menu button {
+  background: transparent;
+  border: none;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+}
+.pane-context-menu button:hover {
+  background: color-mix(in srgb, var(--mono-accent) 15%, transparent);
+}
+.pane-context-menu button.danger {
+  color: #f85149;
 }

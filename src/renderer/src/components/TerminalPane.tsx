@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useRef, useState } from 'react'
+﻿import { forwardRef, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import type { ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -12,11 +12,13 @@ const SCROLLBACK_LINES = 10000
 
 interface Props {
   terminalId: string
+  workspaceId: string
   terminalName: string
   visible: boolean
   isActive: boolean
   onHeaderDragStart: (terminalId: string) => void
   onHeaderDrop: (terminalId: string) => void
+  onHeaderContextMenu: (e: React.MouseEvent, workspaceId: string, terminalId: string) => void
 }
 
 function statusDotClass(status: string | undefined): string {
@@ -34,7 +36,7 @@ const PREVIEW_MAX_LENGTH = 160
 
 // The 16 ANSI colors matter as much as background/foreground: Claude Code's own box-drawing
 // and status text use them directly, and xterm's built-in defaults are tuned for dark
-// backgrounds — on white (or a mismatched preset) they read as low-contrast/washed out
+// backgrounds â€” on white (or a mismatched preset) they read as low-contrast/washed out
 // without an explicit palette matching each theme.
 const XTERM_THEMES: Record<AppTheme, ITheme> = {
   light: {
@@ -161,11 +163,11 @@ function extractPreview(term: Terminal): string {
     lines.unshift(text)
   }
   const joined = lines.join('  ').replace(/\s+/g, ' ').trim()
-  return joined.length > PREVIEW_MAX_LENGTH ? `${joined.slice(0, PREVIEW_MAX_LENGTH)}…` : joined
+  return joined.length > PREVIEW_MAX_LENGTH ? `${joined.slice(0, PREVIEW_MAX_LENGTH)}â€¦` : joined
 }
 
 const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
-  { terminalId, terminalName, visible, isActive, onHeaderDragStart, onHeaderDrop },
+  { terminalId, terminalName, workspaceId, visible, isActive, onHeaderDragStart, onHeaderDrop, onHeaderContextMenu },
   rootRef
 ) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -205,7 +207,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
     // internally. It carries no ARIA semantics out of the box, so OS-level dictation tools
     // (Wispr Flow, Windows Voice Access, ...) that inject text via the accessibility tree's
     // text-input pattern often can't identify it as an editable field even while it has focus.
-    // Explicitly marking it as a textbox is a best-effort fix — some tools also skip elements
+    // Explicitly marking it as a textbox is a best-effort fix â€” some tools also skip elements
     // with no visible bounding box, which this can't change without altering xterm's rendering.
     const helperTextarea = containerRef.current.querySelector('.xterm-helper-textarea')
     if (helperTextarea) {
@@ -215,7 +217,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
     }
 
     // xterm.js's own key handling maps Ctrl+V to the raw Unix "literal next character" control
-    // byte (0x16) and calls preventDefault() on the keydown — which blocks the browser's native
+    // byte (0x16) and calls preventDefault() on the keydown â€” which blocks the browser's native
     // paste (the ClipboardEvent) from ever firing, so xterm's own bracketed-paste text-wrapping
     // never runs. That's invisible in shells whose readline reads the OS clipboard itself on
     // Ctrl+V regardless (PowerShell's PSReadLine does), but breaks paste entirely in programs
@@ -232,7 +234,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
 
     // A hidden pane (display:none) reports a 0x0 box. Fitting/resizing xterm to 0 rows/cols
     // forces it to reflow (and lose) wrapped lines; when the pane becomes visible again the
-    // reflow-back-up leaves stale/ghosted fragments behind — this, not the renderer, was the
+    // reflow-back-up leaves stale/ghosted fragments behind â€” this, not the renderer, was the
     // cause of text appearing to "shift" while scrolling. Never fit while degenerate-sized.
     const safeFit = (): void => {
       const el = containerRef.current
@@ -271,7 +273,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
     })
 
     // The green "active" ring should follow real keyboard focus, not just the last sidebar
-    // click — typing directly into a pinned-but-inactive pane should make it the active one.
+    // click â€” typing directly into a pinned-but-inactive pane should make it the active one.
     // xterm.js exposes no focus event on the Terminal itself; 'focusin' bubbles from its
     // internal hidden textarea, unlike the non-bubbling native 'focus' event.
     const focusHandler = (): void => focusTerminal(terminalId)
@@ -304,7 +306,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
   }, [terminalId])
 
   useEffect(() => {
-    // Skip while the renderer isn't ready yet (e.g. the very first run right after mount) —
+    // Skip while the renderer isn't ready yet (e.g. the very first run right after mount) â€”
     // the constructor already received the correct theme; setting options.theme before xterm's
     // internal renderer initializes can throw, same as fitting/resizing too early.
     if (!termRef.current || !rendererReadyRef.current) return
@@ -324,7 +326,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
         }
         // Only steal focus (and, via the focusin handler above, active status) when this pane
         // is actually the active one. Pinning a second pane makes it visible without making it
-        // active — auto-focusing it here would immediately flip active back to it and hide the
+        // active â€” auto-focusing it here would immediately flip active back to it and hide the
         // pane that's supposed to stay active, defeating the pin.
         if (isActive) termRef.current?.focus()
       })
@@ -339,6 +341,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
     >
       <div
         className="terminal-pane-header"
+        onContextMenu={(e) => onHeaderContextMenu(e, workspaceId, terminalId)}
         draggable
         onDragStart={(e) => {
           e.dataTransfer.effectAllowed = 'move'
@@ -353,14 +356,14 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
       >
         <span className={statusDotClass(status)} />
         <span className="terminal-pane-title">{terminalName}</span>
-        {gitBranch && <span className="terminal-pane-branch">⎇ {gitBranch}</span>}
+        {gitBranch && <span className="terminal-pane-branch">âŽ‡ {gitBranch}</span>}
       </div>
       {searchOpen && (
         <div className="terminal-search-bar">
           <input
             autoFocus
             value={searchQuery}
-            placeholder="Search terminal…"
+            placeholder="Search terminalâ€¦"
             onChange={(e) => {
               setSearchQuery(e.target.value)
               searchAddonRef.current?.findNext(e.target.value)
@@ -372,7 +375,7 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
           />
           <button onClick={() => searchAddonRef.current?.findPrevious(searchQuery)}>Prev</button>
           <button onClick={() => searchAddonRef.current?.findNext(searchQuery)}>Next</button>
-          <button onClick={() => setSearchOpen(false)}>✕</button>
+          <button onClick={() => setSearchOpen(false)}>âœ•</button>
         </div>
       )}
       <div className="terminal-container" ref={containerRef} tabIndex={0} />

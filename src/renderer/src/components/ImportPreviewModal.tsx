@@ -1,4 +1,4 @@
-import { useState } from 'react'
+﻿import { useState } from 'react'
 import type { ImportPreviewEntry } from '../../../shared/types'
 
 interface Props {
@@ -41,9 +41,10 @@ export default function ImportPreviewModal({
                     {entry.terminals.length} terminal{entry.terminals.length === 1 ? '' : 's'}
                   </span>
                 </div>
+                <div className="import-preview-path">{entry.projectPath}</div>
                 {entry.terminals.map((t, ti) => (
                   <div key={ti} className="import-preview-terminal">
-                    <div className="import-preview-path">{t.name} — {t.projectPath}</div>
+                    <div className="import-preview-path">{t.name} â€” {t.projectPath}</div>
                     <div className="import-preview-command">
                       <span className="shortcuts-keys">$</span> {t.startCommand}
                     </div>

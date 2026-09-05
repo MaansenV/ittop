@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FileEntry } from '../../../shared/types'
 import { useAppStore } from '../store/useAppStore'
 import FilePreviewContent, { fileName } from './FilePreviewContent'
@@ -36,7 +36,7 @@ function TreeNode({
         style={{ paddingLeft: 10 + depth * 14 }}
         onClick={() => (entry.isDirectory ? onToggle(entry.path) : onSelectFile(entry.path))}
       >
-        <span className="file-tree-chevron">{entry.isDirectory ? (isOpen ? '▾' : '▸') : ''}</span>
+        <span className="file-tree-chevron">{entry.isDirectory ? (isOpen ? 'â–¾' : 'â–¸') : ''}</span>
         <span className="file-tree-icon">
           <FileIcon name={entry.name} isDirectory={entry.isDirectory} isOpen={isOpen} />
         </span>
@@ -44,7 +44,7 @@ function TreeNode({
       </div>
       {isOpen && dirState?.status === 'loading' && (
         <div className="file-tree-hint" style={{ paddingLeft: 24 + depth * 14 }}>
-          Loading…
+          Loadingâ€¦
         </div>
       )}
       {isOpen && dirState?.status === 'error' && (
@@ -78,13 +78,22 @@ function TreeNode({
 export default function FileExplorer({ onClose }: Props): React.JSX.Element {
   const focusedTerminalId = useAppStore((s) => s.focusedTerminalId)
   const workspaces = useAppStore((s) => s.workspaces)
+  const activeWorkspaceId = useAppStore((s) => s.settings.activeWorkspaceId)
   const filePanelWidth = useAppStore((s) => s.settings.filePanelWidth)
   const setFilePanelWidth = useAppStore((s) => s.setFilePanelWidth)
   const terminal = useMemo(
     () => workspaces.flatMap((w) => w.terminals).find((t) => t.id === focusedTerminalId) ?? null,
     [workspaces, focusedTerminalId]
   )
-  const rootPath = terminal?.projectPath ?? null
+  const activeWorkspace = useMemo(
+    () =>
+      workspaces.find((w) => w.id === activeWorkspaceId) ??
+      workspaces.find((w) => w.terminals.some((t) => t.id === focusedTerminalId)) ??
+      null,
+    [workspaces, activeWorkspaceId, focusedTerminalId]
+  )
+  const rootPath = activeWorkspace?.projectPath || terminal?.projectPath || null
+  const panelTitle = activeWorkspace?.name ?? terminal?.name ?? 'Files'
 
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -146,10 +155,10 @@ export default function FileExplorer({ onClose }: Props): React.JSX.Element {
       <div className="file-panel-header">
         {selectedPath ? (
           <button className="file-panel-back" onClick={() => setSelectedPath(null)} title="Back to tree">
-            ← {fileName(selectedPath)}
+            â† {fileName(selectedPath)}
           </button>
         ) : (
-          <span className="file-panel-title">{terminal ? terminal.name : 'Files'}</span>
+          <span className="file-panel-title">{panelTitle}</span>
         )}
         <div className="file-panel-header-actions">
           {selectedPath && (
@@ -158,22 +167,22 @@ export default function FileExplorer({ onClose }: Props): React.JSX.Element {
               title="Open in a separate window"
               onClick={() => void window.api.openFilePreviewWindow(selectedPath)}
             >
-              ⤢
+              â¤¢
             </button>
           )}
           <button className="icon-button small" title="Close" onClick={onClose}>
-            ✕
+            âœ•
           </button>
         </div>
       </div>
-      {!terminal && (
+      {!rootPath && (
         <div className="file-tree-hint" style={{ padding: 12 }}>
-          No terminal focused.
+          No workspace selected.
         </div>
       )}
-      {terminal && !selectedPath && (
+      {rootPath && !selectedPath && (
         <div className="file-tree">
-          {rootEntries?.status === 'loading' && <div className="file-tree-hint">Loading…</div>}
+          {rootEntries?.status === 'loading' && <div className="file-tree-hint">Loadingâ€¦</div>}
           {rootEntries?.status === 'error' && <div className="file-tree-hint">{rootEntries.message}</div>}
           {rootEntries?.status === 'ready' &&
             rootEntries.entries.map((entry) => (
@@ -190,7 +199,7 @@ export default function FileExplorer({ onClose }: Props): React.JSX.Element {
             ))}
         </div>
       )}
-      {terminal && selectedPath && <FilePreviewContent path={selectedPath} />}
+      {rootPath && selectedPath && <FilePreviewContent path={selectedPath} />}
     </div>
   )
 }

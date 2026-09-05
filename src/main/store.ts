@@ -26,6 +26,8 @@ function defaultState(): PersistedState {
 // Pre-2.0 files stored one terminal directly on the workspace (projectPath/startCommand).
 // Lift that into a single child terminal so every existing workspace keeps working exactly
 // as before, just now expressed in the nested shape.
+// Workspaces created before the workspace-level folder still store the path per terminal —
+// infer it as the workspace path (most common terminal path wins).
 interface LegacyWorkspace {
   id: string
   name: string
@@ -35,9 +37,34 @@ interface LegacyWorkspace {
   terminals?: Terminal[]
 }
 
+function mostCommonPath(terminals: Terminal[]): string {
+  const counts = new Map<string, number>()
+  for (const t of terminals) {
+    if (typeof t.projectPath !== 'string' || !t.projectPath) continue
+    counts.set(t.projectPath, (counts.get(t.projectPath) ?? 0) + 1)
+  }
+  let best = ''
+  let bestCount = 0
+  for (const [path, count] of counts) {
+    if (count > bestCount) {
+      best = path
+      bestCount = count
+    }
+  }
+  return best || terminals[0]?.projectPath || ''
+}
+
 function migrateWorkspace(raw: LegacyWorkspace): Workspace {
   if (Array.isArray(raw.terminals)) {
-    return { id: raw.id, name: raw.name, order: raw.order, terminals: raw.terminals }
+    const workspacePath =
+      typeof raw.projectPath === 'string' && raw.projectPath
+        ? raw.projectPath
+        : mostCommonPath(raw.terminals)
+    const terminals = raw.terminals.map((t) => ({
+      ...t,
+      projectPath: t.projectPath || workspacePath
+    }))
+    return { id: raw.id, name: raw.name, projectPath: workspacePath, order: raw.order, terminals }
   }
   const terminals: Terminal[] =
     typeof raw.projectPath === 'string'
@@ -51,7 +78,13 @@ function migrateWorkspace(raw: LegacyWorkspace): Workspace {
           }
         ]
       : []
-  return { id: raw.id, name: raw.name, order: raw.order, terminals }
+  return {
+    id: raw.id,
+    name: raw.name,
+    projectPath: typeof raw.projectPath === 'string' ? raw.projectPath : '',
+    order: raw.order,
+    terminals
+  }
 }
 
 export class Store {

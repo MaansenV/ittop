@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Sidebar from './components/Sidebar'
 import TerminalPane from './components/TerminalPane'
+import PaneContextMenu from './components/PaneContextMenu'
 import WorkspaceDialog from './components/WorkspaceDialog'
 import TerminalDialog from './components/TerminalDialog'
 import ShortcutsOverlay from './components/ShortcutsOverlay'
@@ -16,6 +17,7 @@ export default function App(): React.JSX.Element {
   const focusedTerminalId = useAppStore((s) => s.focusedTerminalId)
   const load = useAppStore((s) => s.load)
   const openWorkspace = useAppStore((s) => s.openWorkspace)
+  const removeTerminal = useAppStore((s) => s.removeTerminal)
   const reorderTerminals = useAppStore((s) => s.reorderTerminals)
   const setStatus = useAppStore((s) => s.setStatus)
   const setGitBranch = useAppStore((s) => s.setGitBranch)
@@ -29,6 +31,7 @@ export default function App(): React.JSX.Element {
 
   const [dialogOpen, setDialogOpen] = useState(false)
   const [terminalDialogWorkspaceId, setTerminalDialogWorkspaceId] = useState<string | null>(null)
+  const [paneMenu, setPaneMenu] = useState<{ x: number; y: number; workspaceId: string; terminalId: string } | null>(null)
   const [filesOpen, setFilesOpen] = useState(false)
   const [showRestorePrompt, setShowRestorePrompt] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
@@ -128,7 +131,7 @@ export default function App(): React.JSX.Element {
         setShortcutsOpen(false)
         return
       }
-      // Quick workspace switching with the arrow keys — but never while a terminal or text
+      // Quick workspace switching with the arrow keys â€” but never while a terminal or text
       // field has focus, since shells rely on Up/Down for command history.
       if ((event.key === 'ArrowUp' || event.key === 'ArrowDown') && !isTypingTarget(event.target)) {
         if (workspaces.length === 0) return
@@ -165,8 +168,13 @@ export default function App(): React.JSX.Element {
     reorderTerminals(activeWorkspace.id, order)
   }
 
+  function handlePaneContextMenu(e: React.MouseEvent, workspaceId: string, terminalId: string): void {
+    e.preventDefault()
+    setPaneMenu({ x: e.clientX, y: e.clientY, workspaceId, terminalId })
+  }
+
   // Every opened workspace's terminals stay mounted (so their pty/scrollback survive switching
-  // away) — only the active workspace's terminals are actually shown, tiled together in the
+  // away) â€” only the active workspace's terminals are actually shown, tiled together in the
   // arrangement the user set up for that workspace.
   const mountedTerminals = useMemo(
     () =>
@@ -279,7 +287,7 @@ export default function App(): React.JSX.Element {
             <div className="empty-main-mark">&gt;_</div>
             <p>No workspaces yet</p>
             <p className="empty-main-sub">
-              A workspace is a named group of terminals. Add one, then add terminals to it.
+              A workspace is a project folder with terminals. Pick the folder once, then add terminals to it.
             </p>
             <button className="primary" onClick={() => setDialogOpen(true)}>
               Create your first workspace
@@ -290,7 +298,7 @@ export default function App(): React.JSX.Element {
           <div className="empty-main">
             <div className="empty-main-mark">&gt;_</div>
             <p>&quot;{activeWorkspace.name}&quot; has no terminals yet</p>
-            <p className="empty-main-sub">Add one to point it at a project folder and start a session.</p>
+            <p className="empty-main-sub">Add one to start a session in this workspace folder.</p>
             <button className="primary" onClick={() => setTerminalDialogWorkspaceId(activeWorkspace.id)}>
               Add a terminal
             </button>
@@ -300,34 +308,9 @@ export default function App(): React.JSX.Element {
           <div className="empty-main">
             <div className="empty-main-mark">&gt;_</div>
             <p>Select a workspace to start its sessions</p>
-            <p className="empty-main-sub">Click one in the sidebar, or press Ctrl+1…9.</p>
+            <p className="empty-main-sub">Click one in the sidebar, or press Ctrl+1â€¦9.</p>
           </div>
         )}
-        <div className="main-toolbar">
-          {cols > 1 && (
-            <button
-              className="auto-arrange-button"
-              title="Reset column widths"
-              onClick={() => {
-                const evenFractions = Array(cols).fill(1)
-                setColFractions(evenFractions)
-                updateAppSettings({ paneColFractions: evenFractions })
-              }}
-            >
-              ⊞ Reset layout
-            </button>
-          )}
-          <button className="auto-arrange-button" title="Keyboard shortcuts (?)" onClick={() => setShortcutsOpen(true)}>
-            ? Shortcuts
-          </button>
-          <button
-            className={`auto-arrange-button${filesOpen ? ' active' : ''}`}
-            title="Toggle file explorer for the focused terminal"
-            onClick={() => setFilesOpen((open) => !open)}
-          >
-            📁 Files
-          </button>
-        </div>
         <div className="panes" ref={panesRef} style={gridStyle}>
           {mountedTerminals.map(({ workspace, terminal }) => {
             const visible = workspace.id === activeWorkspace?.id
@@ -342,10 +325,12 @@ export default function App(): React.JSX.Element {
                 }}
                 terminalId={terminal.id}
                 terminalName={terminal.name}
+                workspaceId={workspace.id}
                 visible={visible}
                 isActive={isActive}
                 onHeaderDragStart={(sourceId) => (dragPaneIdRef.current = sourceId)}
                 onHeaderDrop={handlePaneDrop}
+                onHeaderContextMenu={handlePaneContextMenu}
               />
             )
           })}
@@ -359,11 +344,45 @@ export default function App(): React.JSX.Element {
               />
             ))}
         </div>
+        <div className="main-toolbar">
+          {cols > 1 && (
+            <button
+              className="auto-arrange-button"
+              title="Reset column widths"
+              onClick={() => {
+                const evenFractions = Array(cols).fill(1)
+                setColFractions(evenFractions)
+                updateAppSettings({ paneColFractions: evenFractions })
+              }}
+            >
+              âŠž Reset layout
+            </button>
+          )}
+          <button className="auto-arrange-button" title="Keyboard shortcuts (?)" onClick={() => setShortcutsOpen(true)}>
+            ? Shortcuts
+          </button>
+          <button
+            className={`auto-arrange-button${filesOpen ? ' active' : ''}`}
+            title="Toggle file explorer for the focused terminal"
+            onClick={() => setFilesOpen((open) => !open)}
+          >
+            ðŸ“ Files
+          </button>
+        </div>
       </div>
       {filesOpen && <FileExplorer onClose={() => setFilesOpen(false)} />}
       {dialogOpen && <WorkspaceDialog onClose={() => setDialogOpen(false)} />}
       {terminalDialogWorkspaceId && (
         <TerminalDialog workspaceId={terminalDialogWorkspaceId} onClose={() => setTerminalDialogWorkspaceId(null)} />
+      )}
+      {paneMenu && (
+        <PaneContextMenu
+          x={paneMenu.x}
+          y={paneMenu.y}
+          onNewTerminal={() => setTerminalDialogWorkspaceId(paneMenu.workspaceId)}
+          onCloseTerminal={() => removeTerminal(paneMenu.workspaceId, paneMenu.terminalId)}
+          onClose={() => setPaneMenu(null)}
+        />
       )}
       {showRestorePrompt && (
         <div className="modal-overlay">
