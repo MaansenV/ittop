@@ -635,21 +635,24 @@ export function normalizeVaultDbPath(s: string): string {
 /**
  * Boot-race guard (pure, unit-tested): true when the store file was
  * (re)created at or after t0 — i.e. NOT the file verified before boot.
- * Compares birthtime AND file index (ino): NTFS tunneling reuses the
- * birthtime on quick delete+recreate, but the index always changes.
+ * Compares ctime AND file index (ino). ctime is cross-platform here:
+ * Windows reports the creation time (covering NTFS tunneling reuse),
+ * POSIX the inode change time — a delete+recreate always stamps it to
+ * "now", even when the filesystem immediately reuses the freed inode
+ * (ext4 does, which is why birthtime/ino alone missed this on CI).
  * `>=` deliberately: a same-millisecond creation refuses once (safe — a
  * retry re-verifies) while no genuine pre-existing store can match.
  * Vanished files (or a missing baseline) refuse as well.
  */
 export interface StoreIdentity {
-  birthtimeMs: number
+  ctimeMs: number
   ino: number
 }
 
 export function storeIdentity(dbFile: string): StoreIdentity | null {
   try {
     const s = statSync(dbFile)
-    return { birthtimeMs: s.birthtimeMs, ino: s.ino }
+    return { ctimeMs: s.ctimeMs, ino: s.ino }
   } catch {
     return null
   }
@@ -660,10 +663,10 @@ export function storeChangedAfter(dbFile: string, t0: number, before: StoreIdent
   let after: StoreIdentity
   try {
     const s = statSync(dbFile)
-    after = { birthtimeMs: s.birthtimeMs, ino: s.ino }
+    after = { ctimeMs: s.ctimeMs, ino: s.ino }
   } catch {
     return true
   }
-  if (after.birthtimeMs >= t0) return true
-  return after.ino !== before.ino
+  if (after.ino !== before.ino) return true
+  return after.ctimeMs >= t0
 }

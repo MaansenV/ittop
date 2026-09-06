@@ -629,12 +629,12 @@ describe('storeChangedAfter', () => {
     const before = storeIdentity(f)
     expect(before).not.toBeNull()
     const t0 = Date.now()
-    // Untouched file: same birthtime AND same index.
+    // Untouched file: same ctime AND same index.
     expect(storeChangedAfter(f, t0, before)).toBe(false)
     expect(storeChangedAfter(join(dir, 'missing.db'), t0, before)).toBe(true)
     expect(storeChangedAfter(f, t0, null)).toBe(true)
-    // Delete + recreate: NTFS tunneling keeps the birthtime, but the
-    // file index changes — the guard must still fire.
+    // Delete + recreate: NTFS tunneling keeps the creation time and ext4
+    // may reuse the inode — ctime (POSIX: inode change) must still fire.
     rmSync(f)
     writeFileSync(f, 'v2')
     expect(storeChangedAfter(f, t0, before)).toBe(true)
