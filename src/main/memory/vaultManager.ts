@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { VaultClient } from './vaultClient'
 import {
@@ -633,40 +634,35 @@ export function normalizeVaultDbPath(s: string): string {
 }
 
 /**
- * Boot-race guard (pure, unit-tested): true when the store file was
- * (re)created at or after t0 — i.e. NOT the file verified before boot.
- * Compares ctime AND file index (ino). ctime is cross-platform here:
- * Windows reports the creation time (covering NTFS tunneling reuse),
- * POSIX the inode change time — a delete+recreate always stamps it to
- * "now", even when the filesystem immediately reuses the freed inode
- * (ext4 does, which is why birthtime/ino alone missed this on CI).
- * `>=` deliberately: a same-millisecond creation refuses once (safe — a
- * retry re-verifies) while no genuine pre-existing store can match.
+ * Boot-race guard (pure, unit-tested): true when the store file is not the
+ * one verified before boot — recreated, replaced or vanished. Compares
+ * CONTENT (size + sha1): fs metadata (birthtime/ctime/ino) proved flaky
+ * across platforms (ext4 reuses freed inodes and reports birthtime 0,
+ * NTFS tunneling reuses creation time), so metadata never gives a
+ * deterministic answer on every runner. Content does. Boot is rare and
+ * vault DBs are small; a hash per boot is negligible.
  * Vanished files (or a missing baseline) refuse as well.
  */
 export interface StoreIdentity {
-  ctimeMs: number
-  ino: number
+  size: number
+  sha1: string
 }
 
 export function storeIdentity(dbFile: string): StoreIdentity | null {
   try {
-    const s = statSync(dbFile)
-    return { ctimeMs: s.ctimeMs, ino: s.ino }
+    return { size: statSync(dbFile).size, sha1: createHash('sha1').update(readFileSync(dbFile)).digest('hex') }
   } catch {
     return null
   }
 }
 
-export function storeChangedAfter(dbFile: string, t0: number, before: StoreIdentity | null): boolean {
+export function storeChangedAfter(dbFile: string, _t0: number, before: StoreIdentity | null): boolean {
   if (!before) return true
   let after: StoreIdentity
   try {
-    const s = statSync(dbFile)
-    after = { ctimeMs: s.ctimeMs, ino: s.ino }
+    after = { size: statSync(dbFile).size, sha1: createHash('sha1').update(readFileSync(dbFile)).digest('hex') }
   } catch {
     return true
   }
-  if (after.ino !== before.ino) return true
-  return after.ctimeMs >= t0
+  return after.size !== before.size || after.sha1 !== before.sha1
 }
