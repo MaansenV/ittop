@@ -9,6 +9,29 @@ const ESC = '\x1b'
  * OSC 9   : ESC ] 9 ; <message> BEL
  * OSC 777 : ESC ] 777 ; notify ; <title> ; <body> (BEL | ESC \\)
  */
+export const TERMINAL_TITLE_MAX_LENGTH = 80
+
+/**
+ * Extracts the last window-title from OSC 0 / 1 / 2 sequences in a chunk
+ * (xterm standard: ESC ] 0|1|2 ; <title> (BEL | ESC \), also emitted by
+ * PowerShell's $Host.UI.RawUI.WindowTitle and shells' precmd/title hooks).
+ * Returns null when no usable title is present. Sanitized + capped so a rogue
+ * agent can't blow up the pane header.
+ */
+export function extractTerminalTitle(chunk: string): string | null {
+  if (!chunk.includes(`${ESC}]`)) return null
+  const titleRegex = /\x1b\][012];([^\x07\x1b]*?)(?:\x07|\x1b\\)/g
+  let match: RegExpExecArray | null
+  let last: string | null = null
+  while ((match = titleRegex.exec(chunk)) !== null) {
+    const cleaned = (match[1] ?? '').replace(/[\x00-\x1F\x7F]+/g, ' ').replace(/\s+/g, ' ').trim()
+    if (cleaned.length > 0) last = cleaned
+  }
+  if (!last) return null
+  // ponytail: hard cap, agent-controlled string in a fixed-width header
+  return last.length > TERMINAL_TITLE_MAX_LENGTH ? `${last.slice(0, TERMINAL_TITLE_MAX_LENGTH - 1)}...` : last
+}
+
 export function containsAttentionOsc(chunk: string): boolean {
   if (!chunk.includes(`${ESC}]`)) return false
 

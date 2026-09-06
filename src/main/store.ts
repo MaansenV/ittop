@@ -18,7 +18,8 @@ function defaultState(): PersistedState {
       notificationsEnabled: true,
       defaultStartCommand: 'claude',
       idleDebounceMs: 1200,
-      paneColFractions: []
+      paneColFractions: [],
+      memoryVaultEnabled: false
     }
   }
 }

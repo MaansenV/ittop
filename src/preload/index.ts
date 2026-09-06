@@ -9,6 +9,12 @@ import type {
   ImportCommitResult,
   ImportPrepareResult,
   ListDirResult,
+  MemoryBrowseInput,
+  MemoryDecideInput,
+  MemoryPromotePreview,
+  MemoryReviewList,
+  MemoryShadowRun,
+  MemoryStatus,
   ReadFileResult,
   Terminal,
   TerminalRuntimeState,
@@ -29,6 +35,8 @@ const api = {
   renameWorkspace: (id: string, name: string): Promise<void> =>
     ipcRenderer.invoke(IPC.workspaceRename, id, name),
   deleteWorkspace: (id: string): Promise<void> => ipcRenderer.invoke(IPC.workspaceDelete, id),
+  restoreWorkspace: (snapshot: Workspace): Promise<Workspace> =>
+    ipcRenderer.invoke(IPC.workspaceRestore, snapshot),
   reorderWorkspaces: (orderedIds: string[]): Promise<void> =>
     ipcRenderer.invoke(IPC.workspaceReorder, orderedIds),
   exportWorkspaces: (): Promise<ExportResult> => ipcRenderer.invoke(IPC.workspacesExport),
@@ -41,6 +49,8 @@ const api = {
     ipcRenderer.invoke(IPC.terminalCreate, input),
   renameTerminal: (id: string, name: string): Promise<void> => ipcRenderer.invoke(IPC.terminalRename, id, name),
   deleteTerminal: (id: string): Promise<void> => ipcRenderer.invoke(IPC.terminalDelete, id),
+  restoreTerminal: (workspaceId: string, snapshot: Terminal): Promise<Terminal> =>
+    ipcRenderer.invoke(IPC.terminalRestore, workspaceId, snapshot),
   reorderTerminals: (workspaceId: string, orderedIds: string[]): Promise<void> =>
     ipcRenderer.invoke(IPC.terminalReorder, workspaceId, orderedIds),
   restartTerminal: (id: string): Promise<void> => ipcRenderer.invoke(IPC.terminalRestart, id),
@@ -104,6 +114,14 @@ const api = {
     ipcRenderer.on(IPC.gitBranchChanged, listener)
     return () => ipcRenderer.removeListener(IPC.gitBranchChanged, listener)
   },
+  onTerminalTitleChanged: (callback: (id: string, title: string) => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: { id: string; title: string }
+    ): void => callback(payload.id, payload.title)
+    ipcRenderer.on(IPC.terminalTitleChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.terminalTitleChanged, listener)
+  },
   onTerminalFocusRequest: (callback: (id: string) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, id: string): void => callback(id)
     ipcRenderer.on(IPC.terminalFocusRequest, listener)
@@ -124,6 +142,26 @@ const api = {
   },
 
   getAppVersion: (): Promise<string> => ipcRenderer.invoke(IPC.appGetVersion),
+
+  // Phase-4 Memory-Screen (default-off via memoryVaultEnabled; main fails
+  // closed while disabled — no child, no file). Reads + review queue only;
+  // vault promotion exists solely as a dry-run preview.
+  memoryStatus: (): Promise<MemoryStatus> => ipcRenderer.invoke(IPC.memoryStatus),
+  memorySearch: (workspaceId: string, query: string, limit?: number, scope?: string[]): Promise<unknown> =>
+    ipcRenderer.invoke(IPC.memorySearch, workspaceId, query, limit, scope),
+  memoryEntity: (workspaceId: string, db: string, id: string): Promise<unknown> =>
+    ipcRenderer.invoke(IPC.memoryEntity, workspaceId, db, id),
+  memoryHistory: (workspaceId: string, db: string, category: string, key: string): Promise<unknown> =>
+    ipcRenderer.invoke(IPC.memoryHistory, workspaceId, db, category, key),
+  memoryBrowse: (workspaceId: string, input: MemoryBrowseInput): Promise<unknown> =>
+    ipcRenderer.invoke(IPC.memoryBrowse, workspaceId, input),
+  memoryReviewList: (): Promise<MemoryReviewList> => ipcRenderer.invoke(IPC.memoryReviewList),
+  memoryReviewDecide: (input: MemoryDecideInput): Promise<unknown> =>
+    ipcRenderer.invoke(IPC.memoryReviewDecide, input),
+  memoryPromoteDryRun: (id: number): Promise<MemoryPromotePreview> =>
+    ipcRenderer.invoke(IPC.memoryPromoteDryRun, id),
+  memoryShadowRuns: (limit?: number): Promise<MemoryShadowRun[]> =>
+    ipcRenderer.invoke(IPC.memoryShadowRuns, limit),
   checkForUpdates: (): Promise<void> => ipcRenderer.invoke(IPC.appCheckForUpdates),
   installUpdate: (): Promise<void> => ipcRenderer.invoke(IPC.appInstallUpdate),
   onUpdateStatus: (callback: (status: UpdateStatus) => void) => {

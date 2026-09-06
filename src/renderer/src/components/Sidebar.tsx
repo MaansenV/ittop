@@ -3,6 +3,7 @@ import type { Terminal, TerminalStatus, Workspace } from '../../../shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { useNow } from '../hooks/useNow'
 import { formatRelativeTime } from '../lib/time'
+import { IconChevD, IconChevL, IconChevR, IconGear, IconPlus, IconX } from './icons'
 import SettingsModal from './SettingsModal'
 
 interface Props {
@@ -52,12 +53,16 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
   const setSidebarWidth = useAppStore((s) => s.setSidebarWidth)
   const toggleSidebarCollapsed = useAppStore((s) => s.toggleSidebarCollapsed)
   const renameWorkspace = useAppStore((s) => s.renameWorkspace)
-  const removeWorkspace = useAppStore((s) => s.removeWorkspace)
+  const trashWorkspace = useAppStore((s) => s.trashWorkspace)
   const reorderWorkspaces = useAppStore((s) => s.reorderWorkspaces)
   const renameTerminal = useAppStore((s) => s.renameTerminal)
-  const removeTerminal = useAppStore((s) => s.removeTerminal)
+  const trashTerminal = useAppStore((s) => s.trashTerminal)
+  const trash = useAppStore((s) => s.trash)
+  const restoreTrash = useAppStore((s) => s.restoreTrash)
+  const dismissTrash = useAppStore((s) => s.dismissTrash)
   const previews = useAppStore((s) => s.previews)
   const previewUpdatedAt = useAppStore((s) => s.previewUpdatedAt)
+  const dynamicTitles = useAppStore((s) => s.dynamicTitles)
 
   const [activeTab, setActiveTab] = useState<SidebarTab>('activity')
   const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | null>(null)
@@ -124,8 +129,8 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
     if (!confirmDeleteWorkspace) return
     const workspace = confirmDeleteWorkspace
     setConfirmDeleteWorkspace(null)
-    removeWorkspace(workspace.id)
-    await window.api.deleteWorkspace(workspace.id)
+    // Trash, not erase: 30s undo window, ids preserved for restore.
+    trashWorkspace(workspace.id)
   }
 
   function handleDragStart(id: string): void {
@@ -175,25 +180,41 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
         matches(
           searchQuery,
           w.name, w.projectPath,
-          ...w.terminals.flatMap((t) => [t.name, t.projectPath, previews[t.id]])
+          ...w.terminals.flatMap((t) => [t.name, t.projectPath, previews[t.id], dynamicTitles[t.id]])
         )
       ),
-    [workspaces, searchQuery, previews]
+    [workspaces, searchQuery, previews, dynamicTitles]
   )
 
   const workspacesList = useMemo(
     () =>
       workspaces.filter((w) =>
-        matches(searchQuery, w.name, w.projectPath, ...w.terminals.flatMap((t) => [t.name, t.projectPath]))
+        matches(searchQuery, w.name, w.projectPath, ...w.terminals.flatMap((t) => [t.name, t.projectPath, dynamicTitles[t.id]]))
       ),
-    [workspaces, searchQuery]
+    [workspaces, searchQuery, dynamicTitles]
   )
+
+  // Readout strip: fleet totals from existing runtime state (display only).
+  const readout = (() => {
+    let waiting = 0
+    let working = 0
+    let idle = 0
+    for (const w of workspaces) {
+      for (const t of w.terminals) {
+        const st = runtime[t.id]?.status ?? 'idle'
+        if (st === 'waiting') waiting += 1
+        else if (st === 'working') working += 1
+        else idle += 1
+      }
+    }
+    return { waiting, working, idle }
+  })()
 
   if (collapsed) {
     return (
       <div className="sidebar collapsed">
         <button className="icon-button" title="Expand sidebar" onClick={toggleSidebarCollapsed}>
-          »
+          <IconChevR size={14} />
         </button>
         <div className="workspace-list collapsed-list">
           {workspaces.map((workspace, index) => {
@@ -215,7 +236,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
           })}
         </div>
         <button className="icon-button" title="New workspace (Ctrl+N)" onClick={onNewWorkspace}>
-          +
+          <IconPlus size={14} />
         </button>
       </div>
     )
@@ -240,13 +261,13 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
         </div>
         <div className="sidebar-header-actions">
           <button className="icon-button" title="Settings" onClick={() => setSettingsOpen(true)}>
-            ⚙
+            <IconGear size={15} />
           </button>
           <button className="icon-button" title="Collapse sidebar" onClick={toggleSidebarCollapsed}>
-            «
+            <IconChevL size={14} />
           </button>
           <button className="icon-button" title="New workspace (Ctrl+N)" onClick={onNewWorkspace}>
-            +
+            <IconPlus size={14} />
           </button>
         </div>
       </div>
@@ -257,6 +278,25 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Filter workspaces…"
           />
+        </div>
+      )}
+      <div className="readout" title="Sessions waiting for input / working / idle">
+        <span className={`readout-wait${readout.waiting === 0 ? ' zero' : ''}`}>{readout.waiting}</span>
+        <span className="readout-sub">
+          waiting · <b>{readout.working}</b> working · <b>{readout.idle}</b> idle
+        </span>
+      </div>
+      {trash && (
+        <div className="trashbar">
+          <span>
+            Deleted <strong>{trash.name}</strong> — sessions restart fresh on restore.
+          </span>
+          <button className="btn btn-chip" onClick={() => void restoreTrash()}>
+            Undo
+          </button>
+          <button className="btn btn-chip" onClick={() => dismissTrash()} aria-label="Dismiss undo">
+            <IconX size={11} />
+          </button>
         </div>
       )}
       {activeTab === 'activity' && (
@@ -332,7 +372,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                     }}
                     title={isCollapsed ? 'Expand' : 'Collapse'}
                   >
-                    ▾
+                    <IconChevD size={11} />
                   </button>
                   <span className={statusClass(status)} />
                   <div className="workspace-info">
@@ -375,14 +415,14 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                       title="Add terminal"
                       onClick={() => onNewTerminal(workspace.id)}
                     >
-                      +
+                      <IconPlus size={13} />
                     </button>
                     <button
                       className="icon-button small"
                       title="Delete workspace"
                       onClick={() => setConfirmDeleteWorkspace(workspace)}
                     >
-                      ✕
+                      <IconX size={13} />
                     </button>
                   </div>
                 </div>
@@ -390,6 +430,18 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                   terminals.map((terminal) => {
                     const rt = runtime[terminal.id]
                     const branch = gitBranches[terminal.id]
+                    const displayName = dynamicTitles[terminal.id] ?? terminal.name
+                    // Identical sibling names (e.g. two "π - ittop") get a
+                    // folder hint so rows stay distinguishable (display only).
+                    // Three or more identical names also get a position number.
+                    const dupes = terminals.filter(
+                      (t) => (dynamicTitles[t.id] ?? t.name) === displayName,
+                    )
+                    const dupe = dupes.length > 1
+                    const folderHint = dupe
+                      ? (terminal.projectPath.split(/[\\/]/).filter(Boolean).pop() ?? '')
+                      : ''
+                    const dupePos = dupes.length > 2 ? dupes.findIndex((t) => t.id === terminal.id) + 1 : 0
                     return (
                       <div
                         key={terminal.id}
@@ -420,11 +472,17 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                                 startTerminalRename(workspace.id, terminal)
                               }}
                             >
-                              {terminal.name}
+                              {displayName}
+                              {folderHint && (
+                                <span className="workspace-also">
+                                  {folderHint}
+                                  {dupePos > 0 && ` ·${dupePos}`}
+                                </span>
+                              )}
                             </div>
                           )}
                           <div className="workspace-meta">
-                            {branch && <span className="workspace-branch">⎇ {branch}</span>}
+                            {branch && <span className="workspace-branch">{branch}</span>}
                           </div>
                         </div>
                         {(rt?.unreadCount ?? 0) > 0 && <span className="unread-badge">{rt.unreadCount}</span>}
@@ -434,7 +492,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                             title="Delete terminal"
                             onClick={() => setConfirmDeleteTerminal({ workspaceId: workspace.id, terminal })}
                           >
-                            ✕
+                            <IconX size={13} />
                           </button>
                         </div>
                       </div>
@@ -442,7 +500,7 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
                   })}
                 {!isCollapsed && (
                   <button className="terminal-add-row" onClick={() => onNewTerminal(workspace.id)}>
-                    + Add terminal
+                    <IconPlus size={11} /> Add terminal
                   </button>
                 )}
               </div>
@@ -472,8 +530,8 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
               are untouched.
             </p>
             <div className="modal-actions">
-              <button onClick={() => setConfirmDeleteWorkspace(null)}>Cancel</button>
-              <button className="danger" onClick={() => void confirmAndDeleteWorkspace()}>
+              <button className="btn" onClick={() => setConfirmDeleteWorkspace(null)}>Cancel</button>
+              <button className="btn btn-danger" onClick={() => void confirmAndDeleteWorkspace()}>
                 Delete
               </button>
             </div>
@@ -489,11 +547,11 @@ export default function Sidebar({ onNewWorkspace, onNewTerminal }: Props): React
               project files on disk are untouched.
             </p>
             <div className="modal-actions">
-              <button onClick={() => setConfirmDeleteTerminal(null)}>Cancel</button>
+              <button className="btn" onClick={() => setConfirmDeleteTerminal(null)}>Cancel</button>
               <button
-                className="danger"
+                className="btn btn-danger"
                 onClick={() => {
-                  removeTerminal(confirmDeleteTerminal.workspaceId, confirmDeleteTerminal.terminal.id)
+                  trashTerminal(confirmDeleteTerminal.workspaceId, confirmDeleteTerminal.terminal.id)
                   setConfirmDeleteTerminal(null)
                 }}
               >

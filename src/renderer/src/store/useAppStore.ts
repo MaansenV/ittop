@@ -6,6 +6,7 @@ interface AppState {
   workspaces: Workspace[]
   runtime: Record<string, TerminalRuntimeState>
   gitBranches: Record<string, string | null>
+  dynamicTitles: Record<string, string>
   settings: AppSettings
   openedWorkspaceIds: Set<string>
   focusedTerminalId: string | null
@@ -35,12 +36,48 @@ interface AppState {
   toggleSidebarCollapsed: () => void
   setStatus: (id: string, status: TerminalStatus, unreadCount: number) => void
   setGitBranch: (id: string, branch: string | null) => void
+  setDynamicTitle: (id: string, title: string) => void
   markPtyStarted: (id: string) => void
   setPreview: (id: string, text: string) => void
   setHookServerPort: (port: number) => void
   markHookEventReceived: (timestamp: number) => void
   updateAppSettings: (patch: Partial<AppSettings>) => void
   setSettingsModalOpen: (open: boolean) => void
+
+  trash: TrashEntry | null
+  trashWorkspace: (id: string) => void
+  trashTerminal: (workspaceId: string, terminalId: string) => void
+  restoreTrash: () => Promise<boolean>
+  dismissTrash: () => void
+}
+
+export interface TrashEntry {
+  kind: 'workspace' | 'terminal'
+  /** Full snapshot (workspace incl. its terminals); ids preserved on restore. */
+  workspace: Workspace
+  terminal?: Terminal
+  /** Parent workspace id (== workspace.id for kind workspace). */
+  workspaceId: string
+  name: string
+  at: number
+}
+
+/** Undo window: long enough to notice, short enough to stay truthful. */
+const TRASH_TTL_MS = 30_000
+let trashTimer: ReturnType<typeof setTimeout> | null = null
+
+function armTrashExpiry(): void {
+  if (trashTimer) clearTimeout(trashTimer)
+  trashTimer = setTimeout(() => {
+    trashTimer = null
+    try {
+      useAppStore.getState().dismissTrash()
+    } catch {
+      // store gone (tests) — nothing to expire
+    }
+  }, TRASH_TTL_MS)
+  const t = trashTimer as unknown as { unref?: () => void }
+  if (typeof t.unref === 'function') t.unref()
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -48,6 +85,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   workspaces: [],
   runtime: {},
   gitBranches: {},
+  dynamicTitles: {},
   settings: {
     sidebarWidth: 280,
     sidebarCollapsed: false,
@@ -57,7 +95,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     notificationsEnabled: true,
     defaultStartCommand: 'claude',
     idleDebounceMs: 1200,
-    paneColFractions: []
+    paneColFractions: [],
+    memoryVaultEnabled: false
   },
   openedWorkspaceIds: new Set(),
   focusedTerminalId: null,
@@ -243,6 +282,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setGitBranch: (id, branch) => set((state) => ({ gitBranches: { ...state.gitBranches, [id]: branch } })),
 
+  setDynamicTitle: (id, title) =>
+    set((state) => {
+      if (state.dynamicTitles[id] === title) return state
+      return { dynamicTitles: { ...state.dynamicTitles, [id]: title } }
+    }),
+
   markPtyStarted: (id) => {
     const state = get()
     set({
@@ -268,7 +313,83 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((state) => ({ settings: { ...state.settings, ...patch } }))
   },
 
-  setSettingsModalOpen: (open) => set({ settingsModalOpen: open })
+  setSettingsModalOpen: (open) => set({ settingsModalOpen: open }),
+
+  trash: null,
+
+  trashWorkspace: (id) => {
+    const workspace = get().workspaces.find((w) => w.id === id)
+    if (!workspace) return
+    get().removeWorkspace(id)
+    void window.api.deleteWorkspace(id)
+    set({
+      trash: {
+        kind: 'workspace',
+        workspace: JSON.parse(JSON.stringify(workspace)) as Workspace,
+        workspaceId: id,
+        name: workspace.name,
+        at: Date.now(),
+      },
+    })
+    armTrashExpiry()
+  },
+
+  trashTerminal: (workspaceId, terminalId) => {
+    const workspace = get().workspaces.find((w) => w.id === workspaceId)
+    const terminal = workspace?.terminals.find((t) => t.id === terminalId)
+    if (!workspace || !terminal) return
+    get().removeTerminal(workspaceId, terminalId)
+    set({
+      trash: {
+        kind: 'terminal',
+        workspace: JSON.parse(JSON.stringify(workspace)) as Workspace,
+        terminal: JSON.parse(JSON.stringify(terminal)) as Terminal,
+        workspaceId,
+        name: terminal.name,
+        at: Date.now(),
+      },
+    })
+    armTrashExpiry()
+  },
+
+  restoreTrash: async () => {
+    const entry = get().trash
+    // Expired or already restored: nothing to do (never resurrect stale).
+    if (!entry || Date.now() - entry.at > TRASH_TTL_MS) {
+      set({ trash: null })
+      return false
+    }
+    try {
+      if (entry.kind === 'workspace') {
+        const restored = await window.api.restoreWorkspace(entry.workspace)
+        get().addWorkspace(restored)
+      } else if (entry.terminal) {
+        const restored = await window.api.restoreTerminal(entry.workspaceId, entry.terminal)
+        get().addTerminal(entry.workspaceId, restored)
+      } else {
+        return false
+      }
+    } catch (e) {
+      // Backend refused (id taken, workspace gone): keep the trash so a
+      // retry stays possible; the failure is real and stays visible.
+      console.error('restore trash failed', e)
+      return false
+    }
+    if (trashTimer) {
+      clearTimeout(trashTimer)
+      trashTimer = null
+    }
+    set({ trash: null })
+    return true
+  },
+
+  dismissTrash: () => {
+    if (trashTimer) {
+      clearTimeout(trashTimer)
+      trashTimer = null
+    }
+    set({ trash: null })
+  },
 }))
 
 function defaultRuntime(): TerminalRuntimeState {
@@ -280,15 +401,16 @@ function defaultRuntime(): TerminalRuntimeState {
 // never reclaimed for the rest of the app's runtime, across however many terminals get created
 // and deleted over a long session.
 function pruneTerminalMaps(
-  state: Pick<AppState, 'runtime' | 'gitBranches' | 'previews' | 'previewUpdatedAt'>,
+  state: Pick<AppState, 'runtime' | 'gitBranches' | 'previews' | 'previewUpdatedAt' | 'dynamicTitles'>,
   terminalIds: string[]
-): Pick<AppState, 'runtime' | 'gitBranches' | 'previews' | 'previewUpdatedAt'> {
+): Pick<AppState, 'runtime' | 'gitBranches' | 'previews' | 'previewUpdatedAt' | 'dynamicTitles'> {
   if (terminalIds.length === 0) {
     return {
       runtime: state.runtime,
       gitBranches: state.gitBranches,
       previews: state.previews,
-      previewUpdatedAt: state.previewUpdatedAt
+      previewUpdatedAt: state.previewUpdatedAt,
+      dynamicTitles: state.dynamicTitles
     }
   }
   const remove = new Set(terminalIds)
@@ -298,6 +420,7 @@ function pruneTerminalMaps(
     runtime: omit(state.runtime),
     gitBranches: omit(state.gitBranches),
     previews: omit(state.previews),
-    previewUpdatedAt: omit(state.previewUpdatedAt)
+    previewUpdatedAt: omit(state.previewUpdatedAt),
+    dynamicTitles: omit(state.dynamicTitles)
   }
 }

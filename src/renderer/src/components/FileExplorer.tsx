@@ -3,6 +3,7 @@ import type { FileEntry } from '../../../shared/types'
 import { useAppStore } from '../store/useAppStore'
 import FilePreviewContent, { fileName } from './FilePreviewContent'
 import FileIcon from './FileIcon'
+import { IconExpand, IconX } from './icons'
 
 interface Props {
   onClose: () => void
@@ -167,11 +168,11 @@ export default function FileExplorer({ onClose }: Props): React.JSX.Element {
               title="Open in a separate window"
               onClick={() => void window.api.openFilePreviewWindow(selectedPath)}
             >
-              ⤢
+              <IconExpand size={13} />
             </button>
           )}
           <button className="icon-button small" title="Close" onClick={onClose}>
-            ✕
+            <IconX size={13} />
           </button>
         </div>
       </div>

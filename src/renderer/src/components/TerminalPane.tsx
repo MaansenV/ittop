@@ -194,6 +194,8 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
   const setPreview = useAppStore((s) => s.setPreview)
   const gitBranch = useAppStore((s) => s.gitBranches[terminalId])
   const status = useAppStore((s) => s.runtime[terminalId]?.status)
+  const dynamicTitle = useAppStore((s) => s.dynamicTitles[terminalId])
+  const displayName = dynamicTitle ?? terminalName
   const theme = useAppStore((s) => s.settings.theme)
 
   useEffect(() => {
@@ -393,10 +395,10 @@ const TerminalPane = forwardRef<HTMLDivElement, Props>(function TerminalPane(
           e.preventDefault()
           onHeaderDrop(terminalId)
         }}
-        title="Drag to rearrange"
+        title={dynamicTitle ? `${terminalName} - ${dynamicTitle} (drag to rearrange)` : "Drag to rearrange"}
       >
         <span className={statusDotClass(status)} />
-        <span className="terminal-pane-title">{terminalName}</span>
+        <span className="terminal-pane-title">{displayName}</span>
         {gitBranch && <span className="terminal-pane-branch">⎇ {gitBranch}</span>}
       </div>
       {searchOpen && (

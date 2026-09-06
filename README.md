@@ -197,6 +197,21 @@ The app matches an incoming hook event to a workspace by comparing `projectPath`
 `cwd`) against each workspace's configured project folder, so make sure the workspace's folder
 matches the directory you actually run `claude` from.
 
+## Dynamic terminal titles
+
+Any agent running inside a terminal can set its pane/sidebar title via the
+standard xterm `OSC 0` escape sequence — no MCP or plugin needed:
+
+```powershell
+Write-Host "`e]0;Fix login bug`a" -NoNewline
+```
+
+```bash
+printf '\033]0;%s\007' "Fix login bug"
+```
+
+The manual name stays as fallback and tooltip.
+
 ## Keyboard shortcuts
 
 | Shortcut          | Action                                    |

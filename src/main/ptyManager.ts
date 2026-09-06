@@ -1,7 +1,7 @@
 import * as pty from 'node-pty'
 import treeKill from 'tree-kill'
 import os from 'os'
-import { containsAttentionOsc } from './osc'
+import { containsAttentionOsc, extractTerminalTitle } from './osc'
 import type { StatusManager } from './statusManager'
 
 const SCROLLBACK_LINES = 10000
@@ -17,6 +17,7 @@ interface Session {
   proc: pty.IPty
   terminalId: string
   idleTimer: NodeJS.Timeout | null
+  titleTail: string
 }
 
 export class PtyManager {
@@ -26,6 +27,7 @@ export class PtyManager {
     private statusManager: StatusManager,
     private onData: (terminalId: string, data: string) => void,
     private onExit: (terminalId: string, exitCode: number) => void,
+    private onTitle: (terminalId: string, title: string) => void,
     // How long output must stay silent before a "working" session is auto-marked idle. This is
     // a fallback signal that needs no Claude Code hook setup, user-tunable via Settings.
     private getIdleDebounceMs: () => number
@@ -47,13 +49,16 @@ export class PtyManager {
       useConpty: process.platform === 'win32'
     })
 
-    const session: Session = { proc, terminalId, idleTimer: null }
+    const session: Session = { proc, terminalId, idleTimer: null, titleTail: '' }
     this.sessions.set(terminalId, session)
 
     proc.onData((data) => {
       if (containsAttentionOsc(data)) {
         this.statusManager.markWaiting(terminalId)
       }
+      const title = extractTerminalTitle(session.titleTail + data)
+      session.titleTail = (session.titleTail + data).slice(-128)
+      if (title) this.onTitle(terminalId, title)
       this.scheduleAutoIdle(session)
       this.onData(terminalId, data)
     })

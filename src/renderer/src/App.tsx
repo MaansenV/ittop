@@ -7,7 +7,10 @@ import TerminalDialog from './components/TerminalDialog'
 import ShortcutsOverlay from './components/ShortcutsOverlay'
 import CommandPalette from './components/CommandPalette'
 import FileExplorer from './components/FileExplorer'
+import { IconBrain, IconFolder } from './components/icons'
+import MemoryScreen from './components/MemoryScreen'
 import { useAppStore } from './store/useAppStore'
+import { useMemoryStore } from './store/useMemoryStore'
 
 export default function App(): React.JSX.Element {
   const loaded = useAppStore((s) => s.loaded)
@@ -21,6 +24,7 @@ export default function App(): React.JSX.Element {
   const reorderTerminals = useAppStore((s) => s.reorderTerminals)
   const setStatus = useAppStore((s) => s.setStatus)
   const setGitBranch = useAppStore((s) => s.setGitBranch)
+  const setDynamicTitle = useAppStore((s) => s.setDynamicTitle)
   const markHookEventReceived = useAppStore((s) => s.markHookEventReceived)
   const focusTerminal = useAppStore((s) => s.focusTerminal)
   const updateAppSettings = useAppStore((s) => s.updateAppSettings)
@@ -33,6 +37,8 @@ export default function App(): React.JSX.Element {
   const [terminalDialogWorkspaceId, setTerminalDialogWorkspaceId] = useState<string | null>(null)
   const [paneMenu, setPaneMenu] = useState<{ x: number; y: number; workspaceId: string; terminalId: string } | null>(null)
   const [filesOpen, setFilesOpen] = useState(false)
+  const [memoryOpen, setMemoryOpen] = useState(false)
+  const setMemoryContext = useMemoryStore((s) => s.setContext)
   const [showRestorePrompt, setShowRestorePrompt] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -71,19 +77,21 @@ export default function App(): React.JSX.Element {
       if (status === 'waiting' && previousStatus !== 'waiting' && document.hasFocus()) {
         const state = useAppStore.getState()
         const terminal = state.workspaces.flatMap((w) => w.terminals).find((t) => t.id === id)
-        const name = terminal?.name ?? id
+        const name = state.dynamicTitles[id] ?? terminal?.name ?? id
         const toastId = `${id}-${Date.now()}`
         setToasts((prev) => [...prev, { id: toastId, terminalId: id, name }])
         setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== toastId)), 6000)
       }
     })
     const unsubBranch = window.api.onGitBranchChanged((id, branch) => setGitBranch(id, branch))
+    const unsubTitle = window.api.onTerminalTitleChanged((id, title) => setDynamicTitle(id, title))
     const unsubFocus = window.api.onTerminalFocusRequest((id) => focusTerminal(id))
     const unsubHook = window.api.onHookEvent((_name, receivedAt) => markHookEventReceived(receivedAt))
     const unsubSettings = window.api.onOpenSettingsRequest(() => setSettingsModalOpen(true))
     return () => {
       unsubStatus()
       unsubBranch()
+      unsubTitle()
       unsubFocus()
       unsubHook()
       unsubSettings()
@@ -154,6 +162,13 @@ export default function App(): React.JSX.Element {
   }
 
   const activeWorkspace = workspaces.find((w) => w.id === settings.activeWorkspaceId) ?? null
+
+  // Memory context follows the shell: workspace and/or flag changes drop
+  // in-flight answers and reset stale store state (idempotent per context).
+  const activeWorkspaceId = activeWorkspace?.id ?? null
+  useEffect(() => {
+    if (memoryOpen) setMemoryContext(activeWorkspaceId, settings.memoryVaultEnabled)
+  }, [memoryOpen, activeWorkspaceId, settings.memoryVaultEnabled, setMemoryContext])
 
   function handlePaneDrop(targetId: string): void {
     const sourceId = dragPaneIdRef.current
@@ -366,11 +381,23 @@ export default function App(): React.JSX.Element {
             title="Toggle file explorer for the focused terminal"
             onClick={() => setFilesOpen((open) => !open)}
           >
-            📁 Files
+            <IconFolder size={14} /> Files
           </button>
+          {settings.memoryVaultEnabled && (
+            <button
+              className={`auto-arrange-button${memoryOpen ? ' active' : ''}`}
+              title="Open memory screen (read-only + review queue)"
+              onClick={() => setMemoryOpen((open) => !open)}
+            >
+              <IconBrain size={14} /> Memory
+            </button>
+          )}
         </div>
       </div>
       {filesOpen && <FileExplorer onClose={() => setFilesOpen(false)} />}
+      {memoryOpen && settings.memoryVaultEnabled && (
+        <MemoryScreen workspaceId={activeWorkspace?.id ?? null} onClose={() => setMemoryOpen(false)} />
+      )}
       {dialogOpen && <WorkspaceDialog onClose={() => setDialogOpen(false)} />}
       {terminalDialogWorkspaceId && (
         <TerminalDialog workspaceId={terminalDialogWorkspaceId} onClose={() => setTerminalDialogWorkspaceId(null)} />

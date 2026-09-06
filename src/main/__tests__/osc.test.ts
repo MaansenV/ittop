@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { containsAttentionOsc } from '../osc'
+import { containsAttentionOsc, extractTerminalTitle } from '../osc'
 
 const ESC = '\x1b'
 const BEL = '\x07'
@@ -32,5 +32,27 @@ describe('containsAttentionOsc', () => {
 
   it('supports the ST (ESC \\\\) terminator as well as BEL', () => {
     expect(containsAttentionOsc(`${ESC}]9;done${ESC}\\`)).toBe(true)
+  })
+})
+
+describe('extractTerminalTitle', () => {
+  it('returns null for plain text', () => {
+    expect(extractTerminalTitle('hello world\n')).toBeNull()
+  })
+
+  it('parses OSC 0 / 1 / 2 titles', () => {
+    expect(extractTerminalTitle(`${ESC}]0;Fix login bug${BEL}`)).toBe('Fix login bug')
+    expect(extractTerminalTitle(`${ESC}]1;tab name${BEL}`)).toBe('tab name')
+    expect(extractTerminalTitle(`${ESC}]2;window name${BEL}`)).toBe('window name')
+  })
+
+  it('takes the last title in a chunk', () => {
+    const chunk = `${ESC}]0;first${BEL} output ${ESC}]0;second${BEL}`
+    expect(extractTerminalTitle(chunk)).toBe('second')
+  })
+
+  it('ignores empty titles and non-title OSC codes', () => {
+    expect(extractTerminalTitle(`${ESC}]0;   ${BEL}`)).toBeNull()
+    expect(extractTerminalTitle(`${ESC}]9;attention${BEL}`)).toBeNull()
   })
 })

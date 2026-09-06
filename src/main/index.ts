@@ -1,11 +1,14 @@
 ﻿import { app, shell, BrowserWindow, ipcMain, dialog, Notification, session, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
-import { readFileSync, writeFileSync, promises as fsPromises } from 'fs'
+import { readFileSync, writeFileSync, existsSync, promises as fsPromises } from 'fs'
 import { v4 as uuidv4 } from 'uuid'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { Store } from './store'
+import { AppShutdown } from './shutdown'
+import { VaultMemoryService, resolveVaultBinary } from './memory/service'
+import { MemoryScreenApi } from './memory/screenApi'
 import { PtyManager } from './ptyManager'
 import { StatusManager } from './statusManager'
 import { HookServer } from './hookServer'
@@ -22,6 +25,8 @@ import type {
   ImportPrepareResult,
   ImportPreviewEntry,
   ListDirResult,
+  MemoryBrowseInput,
+  MemoryDecideInput,
   ReadFileResult,
   RestorableSettings,
   Terminal,
@@ -32,6 +37,16 @@ import type {
 // user's persisted workspaces.json. Must run before Store() (below) touches userData.
 if (process.env.ITTOP_USER_DATA_DIR) {
   app.setPath('userData', process.env.ITTOP_USER_DATA_DIR)
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function isUuid(id: unknown): id is string {
+  return typeof id === 'string' && UUID_RE.test(id)
+}
+function isTerminalSnapshot(t: unknown): t is Terminal {
+  const x = t as Terminal
+  return !!x && isUuid(x.id) && typeof x.name === 'string' && typeof x.projectPath === 'string' &&
+    typeof x.startCommand === 'string' && Number.isInteger(x.order)
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -90,11 +105,28 @@ function createTray(): void {
 }
 
 const store = new Store()
+// Embedded memory vaults: default-off (see memoryVaultEnabled). While disabled
+// no vault child is spawned and no DB/key file is created; all paths stay
+// under this app's userData — never the pre-existing standalone vault DB.
+const vaultService = new VaultMemoryService({
+  userDataDir: app.getPath('userData'),
+  binaryPath: resolveVaultBinary(app.isPackaged, process.resourcesPath ?? '', existsSync),
+  isEnabled: () => store.getState().settings.memoryVaultEnabled === true,
+  log: (message) => console.warn(`[vault] ${message}`)
+})
+// Phase-4 Memory-Screen backend: reads + review queue (review.db only),
+// promotion dry-run. Fails closed while disabled; owns no vault processes.
+const memoryScreen = new MemoryScreenApi({
+  isEnabled: () => store.getState().settings.memoryVaultEnabled === true,
+  userDataDir: app.getPath('userData'),
+  getManager: () => vaultService.getManager()
+})
 const statusManager = new StatusManager()
 const ptyManager = new PtyManager(
   statusManager,
   (terminalId, data) => mainWindow?.webContents.send(IPC.ptyData, { id: terminalId, data }),
   (terminalId, exitCode) => mainWindow?.webContents.send(IPC.ptyExit, { id: terminalId, exitCode }),
+  (terminalId, title) => mainWindow?.webContents.send(IPC.terminalTitleChanged, { id: terminalId, title }),
   () => store.getState().settings.idleDebounceMs
 )
 
@@ -129,6 +161,22 @@ const hookServer = new HookServer((payload) => {
     maybeNotify(terminal, payload.message ?? 'Claude is waiting for your input')
   } else if (payload.hookEventName === 'Stop' || payload.hookEventName === 'SubagentStop') {
     statusManager.markIdle(terminal.id)
+    // Phase-5 shadow eval (fire-and-forget, read-only + dry-run only):
+    // what WOULD capture distill from this session end. Cooldown, disable
+    // and unreadiness all reject quietly — hooks must never break status.
+    if (store.getState().settings.memoryVaultEnabled === true) {
+      const workspace = store.getState().workspaces.find((w) => w.terminals.some((t) => t.id === terminal.id))
+      if (workspace) {
+        void memoryScreen
+          .runShadow({
+            workspaceId: workspace.id,
+            workspaceName: workspace.name,
+            hookEvent: payload.hookEventName,
+            message: payload.message,
+          })
+          .catch((e: unknown) => console.warn(`[shadow] skipped: ${(e as Error).message}`))
+      }
+    }
   }
 })
 const gitPoller = new GitBranchPoller(
@@ -321,6 +369,34 @@ function registerIpcHandlers(): void {
     }
     store.save({ ...state, workspaces: [...state.workspaces, workspace] })
     return workspace
+  })
+
+  // Undo path for renderer deletes: restores the EXACT snapshot (ids kept,
+  // so vault DBs and references stay bound). Strictly validated; never mints.
+  // Restored sessions boot fresh on next open — processes cannot be revived.
+  ipcMain.handle(IPC.workspaceRestore, (_event, snapshot: Workspace) => {
+    if (!isUuid(snapshot?.id) || typeof snapshot?.name !== 'string' || typeof snapshot?.projectPath !== 'string' ||
+        !Array.isArray(snapshot?.terminals) || !snapshot.terminals.every(isTerminalSnapshot)) {
+      throw new Error('invalid workspace restore payload')
+    }
+    const state = store.getState()
+    if (state.workspaces.some((w) => w.id === snapshot.id)) throw new Error('workspace already exists')
+    const workspace: Workspace = { ...snapshot, order: state.workspaces.length }
+    store.save({ ...state, workspaces: [...state.workspaces, workspace] })
+    return workspace
+  })
+
+  ipcMain.handle(IPC.terminalRestore, (_event, workspaceId: string, snapshot: Terminal) => {
+    if (!isUuid(workspaceId) || !isTerminalSnapshot(snapshot)) throw new Error('invalid terminal restore payload')
+    const state = store.getState()
+    const workspace = state.workspaces.find((w) => w.id === workspaceId)
+    if (!workspace) throw new Error('workspace not found')
+    if (workspace.terminals.some((t) => t.id === snapshot.id)) throw new Error('terminal already exists')
+    const workspaces = state.workspaces.map((w) =>
+      w.id === workspaceId ? { ...w, terminals: [...w.terminals, { ...snapshot, order: w.terminals.length }] } : w
+    )
+    store.save({ ...state, workspaces })
+    return snapshot
   })
 
   ipcMain.handle(IPC.workspaceRename, (_event, workspaceId: string, name: string) => {
@@ -620,7 +696,31 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.settingsUpdate, (_event, patch: Record<string, unknown>) => {
     persistSettings(patch)
+    // Flag flipped off: revoke live screen sessions so in-flight reads
+    // fail instead of delivering answers after disable.
+    if (store.getState().settings.memoryVaultEnabled !== true) memoryScreen.onDisabled()
+    void vaultService.reconcile()
   })
+
+  ipcMain.handle(IPC.memoryStatus, () => memoryScreen.status())
+  ipcMain.handle(IPC.memorySearch, (_event, workspaceId: string, query: string, limit?: number, scope?: string[]) =>
+    memoryScreen.search(workspaceId, query, limit, scope)
+  )
+  ipcMain.handle(IPC.memoryEntity, (_event, workspaceId: string, db: string, id: string) =>
+    memoryScreen.entity(workspaceId, db, id)
+  )
+  ipcMain.handle(IPC.memoryHistory, (_event, workspaceId: string, db: string, category: string, key: string) =>
+    memoryScreen.history(workspaceId, db, category, key)
+  )
+  ipcMain.handle(IPC.memoryBrowse, (_event, workspaceId: string, input: MemoryBrowseInput) =>
+    memoryScreen.browse(workspaceId, input)
+  )
+  ipcMain.handle(IPC.memoryReviewList, () => memoryScreen.reviewList())
+  ipcMain.handle(IPC.memoryReviewDecide, (_event, input: MemoryDecideInput) =>
+    memoryScreen.reviewDecide(input)
+  )
+  ipcMain.handle(IPC.memoryPromoteDryRun, (_event, id: number) => memoryScreen.promoteDryRun(id))
+  ipcMain.handle(IPC.memoryShadowRuns, (_event, limit?: number) => memoryScreen.shadowRuns(limit))
 
   ipcMain.handle(IPC.ptyStart, (_event, terminalId: string, cols: number, rows: number) => {
     const found = findTerminal(terminalId)
@@ -677,6 +777,7 @@ app.whenReady().then(() => {
   registerIpcHandlers()
   hookServer.start()
   gitPoller.start()
+  void vaultService.reconcile()
   createWindow()
   createTray()
 
@@ -695,18 +796,29 @@ app.whenReady().then(() => {
   })
 })
 
+let appShutdown: AppShutdown | null = null
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-let quitting = false
-app.on('before-quit', async (event) => {
+app.on('before-quit', (event) => {
   isQuitting = true
-  if (quitting) return
+  if (appShutdown?.settled) return // drain complete: let Electron quit
   event.preventDefault()
-  quitting = true
-  gitPoller.stop()
-  hookServer.stop()
-  await ptyManager.stopAll()
-  app.quit()
+  if (!appShutdown) {
+    appShutdown = new AppShutdown(
+      [
+        { name: 'vault', run: () => vaultService.shutdown() },
+        { name: 'memory-screen', run: async () => memoryScreen.close() },
+        { name: 'pty', run: () => ptyManager.stopAll() },
+      ],
+      () => app.quit(),
+      (message) => console.error(`[shutdown] ${message}`),
+    )
+    gitPoller.stop()
+    hookServer.stop()
+  }
+  // Every quit request joins the same drain; none bypasses it. Never rejects.
+  void appShutdown.requestQuit()
 })

@@ -150,6 +150,15 @@ export default function SettingsModal({ onClose }: Props): React.JSX.Element {
           Show a Windows notification when a session is waiting for input
         </label>
 
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={settings.memoryVaultEnabled}
+            onChange={(e) => updateAppSettings({ memoryVaultEnabled: e.target.checked })}
+          />
+          Enable the embedded memory vault (experimental, local only)
+        </label>
+
         <label>
           Default start command for new workspaces
           <input
