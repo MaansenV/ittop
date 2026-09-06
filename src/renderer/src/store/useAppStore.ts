@@ -96,7 +96,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     defaultStartCommand: 'claude',
     idleDebounceMs: 1200,
     paneColFractions: [],
-    memoryVaultEnabled: false
+    memoryVaultEnabled: false,
+    terminalMcpEnabled: false
   },
   openedWorkspaceIds: new Set(),
   focusedTerminalId: null,

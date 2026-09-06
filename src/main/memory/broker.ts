@@ -2,6 +2,18 @@ import { GLOBAL_DB_ID } from './paths'
 import type { SessionRegistry } from './capabilities'
 import { MERGE_CONTRACT_VERSION, mergeRecallResults, type MergeableItem, type MergedItem } from './recallMerge'
 import type { VaultManager } from './vaultManager'
+import { admit } from './admission'
+import type { ReviewStore, StoredCandidate } from './reviewStore'
+
+export interface MemoryPromoteResult {
+  ok: boolean
+  operationId: string
+  status: 'verified' | 'failed' | 'indeterminate'
+  targetDb: string
+  category: string
+  key: string
+  error?: string
+}
 
 export interface RecallQuery {
   query: string
@@ -85,7 +97,7 @@ export interface BrokerRecallResult<T extends MergeableItem> {
   hasMore: boolean
 }
 
-interface RecallItemWire {
+export interface RecallItemWire {
   id: string
   category?: string
   key?: string
@@ -112,10 +124,15 @@ const BACKEND_INCOMPLETE = new Set(['timeout', 'partial', 'degraded', 'unavailab
 // persists usage changes; fts5 would (+1 count/access/decay per served
 // recall) and is therefore rejected above. derived_from is never cited, so
 // broker reads mark nothing as useful.
+export interface BrokerOptions {
+  allowLiveWrites?: boolean
+}
+
 export class MemoryBroker {
   constructor(
     private readonly manager: VaultManager,
     private readonly sessions: SessionRegistry,
+    private readonly opts: BrokerOptions = {},
   ) {}
 
   async recall(
@@ -252,6 +269,174 @@ export class MemoryBroker {
     )
     this.sessions.assertLive(handle)
     return { evaluatedAt, perDb: settled, partial: settled.some((s) => s.missing !== null) }
+  }
+
+  /**
+   * Promotes an approved candidate into the target vault.
+   * Runs the entire sequence (approval recheck, multi-page scan, admission,
+   * write dispatch, and readback verification) under the manager's exclusive DB lock.
+   */
+  async promote(
+    handle: string,
+    candidate: StoredCandidate & { id: number; revision: number },
+    reviews: ReviewStore,
+  ): Promise<MemoryPromoteResult> {
+    if (!this.opts.allowLiveWrites && process.env.ITTOP_ALLOW_LIVE_PROMOTION !== 'true') {
+      throw new Error('vault writes are locked in this phase (dry-run preview only until migration gate approval)')
+    }
+
+    this.sessions.assertCanPromote(handle, candidate.db)
+    const operationId = `${candidate.id}:${candidate.revision}:${candidate.db}`
+
+    const intent = reviews.recordPromotionIntent({
+      operationId,
+      fromDb: candidate.db,
+      toDb: candidate.db,
+      category: candidate.category,
+      key: candidate.key,
+      snapshot: JSON.stringify({
+        content: candidate.content,
+        triggers: candidate.triggers,
+        future_use: candidate.futureUse,
+        evidence: candidate.evidence,
+      }),
+    })
+
+    if (intent === 'verified') {
+      return {
+        ok: true,
+        operationId,
+        status: 'verified',
+        targetDb: candidate.db,
+        category: candidate.category,
+        key: candidate.key,
+      }
+    }
+
+    return this.manager.withWriteTransaction(candidate.db, async (writeDirect) => {
+      // 1. Re-verify session and candidate under lock
+      this.sessions.assertLive(handle)
+      const stored = reviews.get(candidate.id)
+      if (!stored || stored.statusState !== 'approved' || stored.revision !== candidate.revision) {
+        const err = `candidate ${candidate.id} changed or no longer approved`
+        reviews.updatePromotionState(operationId, 'failed', 'intent', err)
+        throw new Error(err)
+      }
+
+      // 2. Full multi-page live scan
+      const liveItems: RecallItemWire[] = []
+      const seenCursors = new Set<string>()
+      let cursor: string | undefined = undefined
+      for (let pageNum = 0; pageNum < 50; pageNum++) {
+        const scan = await this.browse(handle, {
+          scope: [candidate.db],
+          category: candidate.category,
+          cursor,
+          limit: 100,
+        })
+        if (scan.partial) {
+          const err = `live scan on ${candidate.db} returned partial results`
+          reviews.updatePromotionState(operationId, 'failed', 'intent', err)
+          throw new Error(err)
+        }
+        const dbResult = scan.perDb[0]
+        if (!dbResult || dbResult.missing) {
+          const err = `live scan on ${candidate.db} failed: ${dbResult?.missing?.reason ?? 'missing'}`
+          reviews.updatePromotionState(operationId, 'failed', 'intent', err)
+          throw new Error(err)
+        }
+        liveItems.push(...dbResult.items)
+        if (!dbResult.hasMore) break
+        if (!dbResult.nextCursor || seenCursors.has(dbResult.nextCursor)) {
+          const err = `live scan on ${candidate.db} reported invalid or repeated cursor`
+          reviews.updatePromotionState(operationId, 'failed', 'intent', err)
+          throw new Error(err)
+        }
+        if (pageNum === 49) {
+          const err = `live scan on ${candidate.db} exceeded 50 pages bound`
+          reviews.updatePromotionState(operationId, 'failed', 'intent', err)
+          throw new Error(err)
+        }
+        seenCursors.add(dbResult.nextCursor)
+        cursor = dbResult.nextCursor
+      }
+
+      // 3. Admission check against complete live items
+      const admission = admit(candidate, {
+        findSameKey: (_db, _cat, key) =>
+          liveItems
+            .filter((i) => i.key === key)
+            .map((i) => ({ status: 'active', content: i.content ?? '' })),
+      })
+
+      if (admission.decision === 'reject') {
+        const err = `live admission rejected: ${admission.reasons.join('; ')}`
+        reviews.updatePromotionState(operationId, 'failed', 'intent', err)
+        throw new Error(err)
+      }
+
+      const hasLiveCollision = liveItems.some((i) => i.key === candidate.key)
+      const override = (candidate as { decisionMeta?: { override?: unknown } }).decisionMeta?.override
+      if (hasLiveCollision && !override) {
+        const err = 'live admission conflict: existing key requires audited human override'
+        reviews.updatePromotionState(operationId, 'failed', 'intent', err)
+        throw new Error(err)
+      }
+
+      // 4. Atomic CAS to dispatched
+      reviews.updatePromotionState(operationId, 'dispatched', 'intent')
+      this.sessions.assertLive(handle)
+
+      // 5. Exclusive write
+      try {
+        await writeDirect({
+          category: candidate.category,
+          key: candidate.key,
+          body: JSON.stringify({
+            content: candidate.content,
+            triggers: candidate.triggers,
+            future_use: candidate.futureUse,
+            source_ref: candidate.evidence?.sourceRef,
+          }),
+        })
+      } catch (writeErr) {
+        const message = (writeErr as Error).message || String(writeErr)
+        reviews.updatePromotionState(operationId, 'indeterminate', 'dispatched', message)
+        throw new Error(`write dispatched but outcome indeterminate: ${message}`)
+      }
+
+      // 6. Exact readback verify against restarted vault
+      this.sessions.assertLive(handle)
+      try {
+        const readback = (await this.history(handle, candidate.db, candidate.category, candidate.key)) as {
+          versions?: Array<{ category?: string; key?: string }>
+          total?: number
+        } | null
+        const versions = Array.isArray(readback?.versions) ? readback.versions : []
+        const matched = versions.some(
+          (v) => v.category === candidate.category && v.key === candidate.key,
+        )
+        if (!matched) {
+          reviews.updatePromotionState(operationId, 'indeterminate', 'dispatched', 'readback verification found no matching entity')
+          throw new Error('promotion write succeeded but readback verification found no matching entity')
+        }
+      } catch (readbackErr) {
+        const message = (readbackErr as Error).message || String(readbackErr)
+        reviews.updatePromotionState(operationId, 'indeterminate', 'dispatched', `readback verification failed: ${message}`)
+        throw new Error(`promotion write succeeded but readback verification failed: ${message}`)
+      }
+
+      reviews.updatePromotionState(operationId, 'verified', 'dispatched')
+      reviews.markCandidatePromoted(candidate.id)
+      return {
+        ok: true,
+        operationId,
+        status: 'verified',
+        targetDb: candidate.db,
+        category: candidate.category,
+        key: candidate.key,
+      }
+    })
   }
 
   private resolveScope(handle: string, scope: RecallScope | undefined): VaultDbId[] {

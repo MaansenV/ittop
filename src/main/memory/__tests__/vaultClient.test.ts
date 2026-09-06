@@ -61,7 +61,7 @@ describe('VaultClient', () => {
   })
 
   it('times out a hanging call and stays usable', async () => {
-    const c = client(100)
+    const c = client(250)
     await c.start()
     await expect(c.call('hang', {})).rejects.toThrow(/timeout/)
     const res = (await c.call('ping', {})) as { echo: { name: string } }

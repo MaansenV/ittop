@@ -48,8 +48,20 @@ export class VaultMemoryService {
   private op: Promise<void> | null = null
   private shutDown = false
   private lastError: Error | null = null
+  private killSwitch = false
 
   constructor(private readonly deps: VaultServiceDeps) {}
+
+  setKillSwitch(active: boolean): void {
+    this.killSwitch = active
+    if (active) {
+      this.manager?.stopAll().catch(() => undefined)
+    }
+  }
+
+  isKillSwitchActive(): boolean {
+    return this.killSwitch || this.shutDown
+  }
 
   get active(): boolean {
     return this.manager !== null

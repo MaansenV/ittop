@@ -37,7 +37,7 @@ export class PtyManager {
     return this.sessions.has(terminalId)
   }
 
-  start(terminalId: string, cwd: string, startCommand: string, cols = 80, rows = 30): void {
+  start(terminalId: string, cwd: string, startCommand: string, cols = 80, rows = 30, extraEnv: Record<string, string> = {}): void {
     if (this.sessions.has(terminalId)) return
 
     const proc = pty.spawn(DEFAULT_SHELL, SHELL_ARGS, {
@@ -45,7 +45,7 @@ export class PtyManager {
       cols,
       rows,
       cwd,
-      env: { ...process.env } as Record<string, string>,
+      env: { ...process.env, ...extraEnv } as Record<string, string>,
       useConpty: process.platform === 'win32'
     })
 

@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { VaultClient } from './vaultClient'
 import {
@@ -11,7 +10,7 @@ import {
 } from './paths'
 
 export type VaultDbId = string // 'global' or 'workspace:<uuid>' (see paths.ts)
-export type VaultState = 'stopped' | 'starting' | 'ready' | 'degraded' | 'backoff' | 'stopping'
+export type VaultState = 'stopped' | 'starting' | 'ready' | 'degraded' | 'backoff' | 'stopping' | 'writing'
 
 export interface VaultProcess {
   readonly running: boolean
@@ -53,6 +52,7 @@ export interface VaultManagerOptions {
   initDb?: (paths: VaultPaths) => Promise<void>
   initTimeoutMs?: number
   createInitProcess?: InitProcessFactory
+  cliWrite?: (paths: VaultPaths, args: { category: string; key: string; body: string }) => Promise<void>
 }
 
 interface Entry {
@@ -123,6 +123,9 @@ export class VaultManager {
     guard?: () => void,
   ): Promise<unknown> {
     const entry = this.getOrCreate(db)
+    if (entry.state === 'writing') {
+      throw new Error(`vault '${db}' is locked for exclusive writing`)
+    }
     if (entry.state !== 'ready' || !entry.client) {
       await this.ensure(db)
     }
@@ -188,18 +191,23 @@ export class VaultManager {
    */
   async bootExisting(db: VaultDbId): Promise<void> {
     const paths = pathsForDb(this.opts.userDataDir, db) // throws on unknown ids
-    const before = storeIdentity(paths.dbFile)
-    if (!before) {
+    const baseline = openBaseline(paths.dbFile)
+    if (!baseline) {
       throw new Error(`vault '${db}' has no store (browse creates nothing)`)
     }
     if (!existsSync(paths.keyFile)) {
+      closeBaseline(baseline)
       throw new Error(`vault '${db}' has no key (browse creates nothing)`)
     }
     const t0 = Date.now()
-    await this.ensureInner(db, true)
-    if (storeChangedAfter(paths.dbFile, t0, before)) {
-      await this.stop(db).catch(() => undefined)
-      throw new Error(`vault '${db}' store changed during boot (not served)`)
+    try {
+      await this.ensureInner(db, true)
+      if (storeChangedAfter(paths.dbFile, t0, baseline)) {
+        await this.stop(db).catch(() => undefined)
+        throw new Error(`vault '${db}' store changed during boot (not served)`)
+      }
+    } finally {
+      closeBaseline(baseline)
     }
   }
 
@@ -288,6 +296,132 @@ export class VaultManager {
     })()
     entry.stopPromise = p
     return p
+  }
+
+  private writeLocks = new Map<string, Promise<void>>()
+
+  async withDbLock<T>(db: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.writeLocks.get(db) ?? Promise.resolve()
+    let releaseLock!: () => void
+    const nextLock = new Promise<void>((r) => {
+      releaseLock = r
+    })
+    this.writeLocks.set(db, prev.then(() => nextLock, () => nextLock))
+    await prev
+    try {
+      return await fn()
+    } finally {
+      releaseLock()
+    }
+  }
+
+  /**
+   * Runs an exclusive promote transaction under a single continuous DB lock.
+   * Gates all lifecycle/RPC entries, drains active requests, provides a direct writer
+   * (no lock reacquisition, zero concurrent SQLite access), and restarts serve with
+   * health verification on success.
+   */
+  async withWriteTransaction<T>(
+    db: VaultDbId,
+    fn: (writer: (args: { category: string; key: string; body: string }) => Promise<void>) => Promise<T>,
+  ): Promise<T> {
+    const paths = pathsForDb(this.opts.userDataDir, db)
+    return this.withDbLock(db, async () => {
+      const entry = this.getOrCreate(db)
+      const directWriter = async (writeArgs: { category: string; key: string; body: string }): Promise<void> => {
+        entry.state = 'writing'
+        let uncertain = false
+        try {
+          await this.drain(entry, true)
+          if (this.opts.cliWrite) {
+            await this.opts.cliWrite(paths, writeArgs)
+          } else {
+            await this.defaultCliWrite(paths, writeArgs)
+          }
+        } catch (e) {
+          uncertain = true
+          throw e
+        } finally {
+          entry.state = 'stopped'
+          if (!uncertain) {
+            try {
+              await this.ensureInner(db, false)
+            } catch {
+              entry.state = 'degraded'
+            }
+          } else {
+            entry.state = 'degraded'
+          }
+        }
+      }
+      return fn(directWriter)
+    })
+  }
+
+  async executeWrite(
+    db: VaultDbId,
+    writeArgs: { category: string; key: string; body: string },
+  ): Promise<void> {
+    return this.withWriteTransaction(db, async (writer) => {
+      await writer(writeArgs)
+    })
+  }
+
+  private async defaultCliWrite(
+    paths: VaultPaths,
+    writeArgs: { category: string; key: string; body: string },
+  ): Promise<void> {
+    return new Promise((resolveWrite, rejectWrite) => {
+      const child = spawn(
+        this.opts.binaryPath,
+        [
+          'write',
+          '--db',
+          paths.dbFile,
+          '--encryption-key',
+          paths.keyFile,
+          '--category',
+          writeArgs.category,
+          '--key',
+          writeArgs.key,
+          '--body',
+          writeArgs.body,
+        ],
+        { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+      )
+      let stderr = ''
+      let stdout = ''
+      child.stdout?.on('data', (d) => {
+        stdout = (stdout + d.toString()).slice(-4096)
+      })
+      child.stderr?.on('data', (d) => {
+        stderr = (stderr + d.toString()).slice(-4096)
+      })
+      let settled = false
+      const timer = setTimeout(() => {
+        if (!settled) {
+          try {
+            child.kill('SIGKILL')
+          } catch {
+            // ignore
+          }
+          // Do not settle immediately — wait for 'close' event so process death is confirmed
+        }
+      }, 15_000)
+      child.on('close', (code) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        if (code === 0) resolveWrite()
+        else rejectWrite(new Error(`cli write failed with exit code ${code}: ${stderr.trim()}`))
+      })
+      child.on('error', (err) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        rejectWrite(err)
+      })
+    })
   }
 
   async stop(db: VaultDbId): Promise<void> {
@@ -635,34 +769,57 @@ export function normalizeVaultDbPath(s: string): string {
 
 /**
  * Boot-race guard (pure, unit-tested): true when the store file is not the
- * one verified before boot — recreated, replaced or vanished. Compares
- * CONTENT (size + sha1): fs metadata (birthtime/ctime/ino) proved flaky
- * across platforms (ext4 reuses freed inodes and reports birthtime 0,
- * NTFS tunneling reuses creation time), so metadata never gives a
- * deterministic answer on every runner. Content does. Boot is rare and
- * vault DBs are small; a hash per boot is negligible.
+ * one verified before boot — recreated, replaced or vanished. Holds an open
+ * file descriptor baseline so unlinking on POSIX cannot reuse the inode while
+ * held, and file replacement on Windows is blocked by share locks.
+ * Compares dev + ino: legitimate SQLite writes to the existing file are
+ * permitted without changing identity.
  * Vanished files (or a missing baseline) refuse as well.
  */
 export interface StoreIdentity {
-  size: number
-  sha1: string
+  fd?: number
+  dev: bigint
+  ino: bigint
 }
 
-export function storeIdentity(dbFile: string): StoreIdentity | null {
+export function openBaseline(dbFile: string): StoreIdentity | null {
+  let fd: number | undefined
   try {
-    return { size: statSync(dbFile).size, sha1: createHash('sha1').update(readFileSync(dbFile)).digest('hex') }
+    fd = openSync(dbFile, 'r')
+    const s = fstatSync(fd, { bigint: true })
+    return { fd, dev: s.dev, ino: s.ino }
   } catch {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        // ignore
+      }
+    }
     return null
   }
 }
 
+export function closeBaseline(id: StoreIdentity | null): void {
+  if (id?.fd !== undefined) {
+    try {
+      closeSync(id.fd)
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export function storeIdentity(dbFile: string): StoreIdentity | null {
+  return openBaseline(dbFile)
+}
+
 export function storeChangedAfter(dbFile: string, _t0: number, before: StoreIdentity | null): boolean {
   if (!before) return true
-  let after: StoreIdentity
   try {
-    after = { size: statSync(dbFile).size, sha1: createHash('sha1').update(readFileSync(dbFile)).digest('hex') }
+    const s = statSync(dbFile, { bigint: true })
+    return s.dev !== before.dev || s.ino !== before.ino
   } catch {
     return true
   }
-  return after.size !== before.size || after.sha1 !== before.sha1
 }

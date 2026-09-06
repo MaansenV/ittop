@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { VaultManager, storeIdentity, storeChangedAfter, type VaultProcess, type VaultProcessFactory } from '../vaultManager'
+import { VaultManager, storeIdentity, storeChangedAfter, closeBaseline, type VaultProcess, type VaultProcessFactory } from '../vaultManager'
 import type { VaultPaths } from '../paths'
 
 const WS = '11111111-1111-4111-8111-111111111111'
@@ -615,6 +615,38 @@ describe('bootExisting', () => {
     await expect(manager.bootExisting(`workspace:${WS}`)).rejects.toThrow(/changed during boot/)
     await manager.stopAll()
   })
+
+  it('executeWrite stops serve, runs writer, and restarts serve under lease', async () => {
+    let serveRunning = false
+    let writes = 0
+    let writeSawServe = false
+    const manager = new VaultManager({
+      userDataDir: realDir(),
+      binaryPath: 'bin',
+      initDb: () => Promise.resolve(),
+      createClient: (paths, onExit) => {
+        serveRunning = true
+        const fake = makeFake(paths, onExit)
+        const origStop = fake.stop.bind(fake)
+        fake.stop = async () => {
+          serveRunning = false
+          return origStop()
+        }
+        return fake
+      },
+      cliWrite: async (_paths, _args) => {
+        writes += 1
+        if (serveRunning) writeSawServe = true
+      },
+    })
+    await manager.ensureWorkspace(WS)
+    expect(serveRunning).toBe(true)
+    await manager.executeWrite(`workspace:${WS}`, { category: 'decision', key: 'k1', body: '{}' })
+    expect(writes).toBe(1)
+    expect(writeSawServe).toBe(false)
+    expect(serveRunning).toBe(true)
+    await manager.stopAll()
+  })
 })
 
 describe('storeChangedAfter', () => {
@@ -632,13 +664,11 @@ describe('storeChangedAfter', () => {
     expect(storeChangedAfter(f, t0, before)).toBe(false)
     expect(storeChangedAfter(join(dir, 'missing.db'), t0, before)).toBe(true)
     expect(storeChangedAfter(f, t0, null)).toBe(true)
-    // Delete + recreate (same size): metadata can survive on NTFS/ext4 —
-    // the content hash must fire.
+    // Delete + recreate: baseline descriptor holds open the old inode,
+    // so the new file gets a distinct inode even on rapid ext4 reuse.
     rmSync(f)
     writeFileSync(f, 'v2')
     expect(storeChangedAfter(f, t0, before)).toBe(true)
-    // Same-path rewrite without delete, same size: mtime/ino may not move.
-    writeFileSync(f, 'v1')
-    expect(storeChangedAfter(f, t0, before)).toBe(false)
+    closeBaseline(before)
   })
 })

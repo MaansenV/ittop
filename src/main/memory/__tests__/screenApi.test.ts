@@ -55,6 +55,8 @@ function stubManager(): VaultManager {
     // Browse path (callIfReady): same stubbed backend, separate method.
     callIfReady: async (db: string, tool: string) => serve(db, tool),
     bootExisting: async () => undefined,
+    withDbLock: async (_db: string, fn: () => Promise<unknown>) => fn(),
+    executeWrite: async () => undefined,
   } as unknown as VaultManager
 }
 
@@ -359,7 +361,7 @@ describe('MemoryScreenApi', () => {
       enabled = false
       api.onDisabled() // settingsUpdate wiring calls exactly this
       release({ items: [{ id: 'late', category: 'decision', key: 'k', content: 'must never arrive' }] })
-      await expect(pending).rejects.toThrow(/disabled|revoked|unknown memory session/)
+      await expect(pending).rejects.toThrow(/disabled|revoked|unknown memory session|kill-switch/)
       expect(internals.sessions.size).toBe(0)
     } finally {
       api.close()
@@ -464,6 +466,59 @@ describe('MemoryScreenApi', () => {
       const store = (api as unknown as { reviews: () => { submit: (c: AdmissionCandidate, v: unknown) => number } }).reviews()
       const id = store.submit(candidate({ key: 'pending-key' }), reviewVerdict)
       expect(() => api.promoteDryRun(id)).toThrow(/only approved/)
+    } finally {
+      api.close()
+    }
+  })
+
+  it('promotes approved candidates through broker and records verified audit', async () => {
+    let writeCalled = false
+    const customManager = {
+      call: async (_db: string, tool: string) => {
+        if (tool === 'perseus_vault_history') return { versions: [{ category: 'decision', key: 'prom-key' }], total: 1 }
+        return { items: [], total: 0, has_more: false, next_cursor: null }
+      },
+      callIfReady: async (_db: string, _tool: string) => ({ items: [], total: 0, has_more: false, next_cursor: null }),
+      bootExisting: async () => undefined,
+      withDbLock: async (_db: string, fn: () => Promise<unknown>) => fn(),
+      withWriteTransaction: async (_db: string, fn: (writer: (args: unknown) => Promise<void>) => Promise<unknown>) =>
+        fn(async () => {
+          writeCalled = true
+        }),
+      executeWrite: async () => {
+        writeCalled = true
+      },
+    } as unknown as VaultManager
+    process.env.ITTOP_ALLOW_LIVE_PROMOTION = 'true'
+    const api = setup(true, customManager)
+    try {
+      const store = (api as unknown as { reviews: () => { submit: (c: AdmissionCandidate, v: unknown) => number; get: (id: number) => { statusState: string } } }).reviews()
+      const id = store.submit(candidate({ key: 'prom-key' }), reviewVerdict)
+      api.reviewDecide({ id, approved: true, expectedRevision: 1 })
+      const res = await api.promote(id, 1)
+      expect(res.ok).toBe(true)
+      expect(res.status).toBe('verified')
+      expect(writeCalled).toBe(true)
+      expect(store.get(id).statusState).toBe('promoted')
+
+      // Idempotent duplicate re-promotion
+      const res2 = await api.promote(id, 1)
+      expect(res2.ok).toBe(true)
+      expect(res2.status).toBe('verified')
+    } finally {
+      delete process.env.ITTOP_ALLOW_LIVE_PROMOTION
+      api.close()
+    }
+  })
+
+  it('promote rejects revision mismatch or non-approved candidates', async () => {
+    const api = setup()
+    try {
+      const store = (api as unknown as { reviews: () => { submit: (c: AdmissionCandidate, v: unknown) => number } }).reviews()
+      const id = store.submit(candidate({ key: 'rev-key' }), reviewVerdict)
+      await expect(api.promote(id, 1)).rejects.toThrow(/only approved/)
+      api.reviewDecide({ id, approved: true, expectedRevision: 1 })
+      await expect(api.promote(id, 2)).rejects.toThrow(/revision mismatch/)
     } finally {
       api.close()
     }

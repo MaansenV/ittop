@@ -125,7 +125,10 @@ const statusManager = new StatusManager()
 const ptyManager = new PtyManager(
   statusManager,
   (terminalId, data) => mainWindow?.webContents.send(IPC.ptyData, { id: terminalId, data }),
-  (terminalId, exitCode) => mainWindow?.webContents.send(IPC.ptyExit, { id: terminalId, exitCode }),
+  (terminalId, exitCode) => {
+    void memoryScreen.closeTerminalBridge(terminalId)
+    mainWindow?.webContents.send(IPC.ptyExit, { id: terminalId, exitCode })
+  },
   (terminalId, title) => mainWindow?.webContents.send(IPC.terminalTitleChanged, { id: terminalId, title }),
   () => store.getState().settings.idleDebounceMs
 )
@@ -423,6 +426,7 @@ function registerIpcHandlers(): void {
     if (workspace) {
       await Promise.all(workspace.terminals.map((t) => ptyManager.stop(t.id)))
       for (const t of workspace.terminals) {
+        void memoryScreen.closeTerminalBridge(t.id)
         statusManager.remove(t.id)
         unreadCounts.delete(t.id)
         gitPoller.forget(t.id)
@@ -483,6 +487,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.terminalDelete, async (_event, terminalId: string) => {
     await ptyManager.stop(terminalId)
+    void memoryScreen.closeTerminalBridge(terminalId)
     statusManager.remove(terminalId)
     unreadCounts.delete(terminalId)
     gitPoller.forget(terminalId)
@@ -720,12 +725,26 @@ function registerIpcHandlers(): void {
     memoryScreen.reviewDecide(input)
   )
   ipcMain.handle(IPC.memoryPromoteDryRun, (_event, id: number) => memoryScreen.promoteDryRun(id))
+  ipcMain.handle(IPC.memoryPromote, (_event, id: number, expectedRevision: number) =>
+    memoryScreen.promote(id, expectedRevision)
+  )
   ipcMain.handle(IPC.memoryShadowRuns, (_event, limit?: number) => memoryScreen.shadowRuns(limit))
 
-  ipcMain.handle(IPC.ptyStart, (_event, terminalId: string, cols: number, rows: number) => {
+  ipcMain.handle(IPC.ptyStart, async (_event, terminalId: string, cols: number, rows: number) => {
     const found = findTerminal(terminalId)
     if (!found) return
-    ptyManager.start(terminalId, found.terminal.projectPath, found.terminal.startCommand, cols, rows)
+    let extraEnv: Record<string, string> = {}
+    if (store.getState().settings.terminalMcpEnabled === true) {
+      const bridge = await memoryScreen.createTerminalBridge(found.workspace.id, terminalId)
+      if (bridge) {
+        extraEnv = {
+          ITTOP_MCP_SOCKET: bridge.socketPath,
+          ITTOP_MCP_TOKEN: bridge.sessionHandle,
+          ITTOP_MCP_SHIM: join(__dirname, 'mcpShim.js'),
+        }
+      }
+    }
+    ptyManager.start(terminalId, found.terminal.projectPath, found.terminal.startCommand, cols, rows, extraEnv)
     unreadCounts.set(terminalId, 0)
   })
 

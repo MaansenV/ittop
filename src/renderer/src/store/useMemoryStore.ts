@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { MemoryPromotePreview, MemoryReviewList, MemoryShadowRun, MemoryStatus } from '../../../shared/types'
+import type { MemoryPromotePreview, MemoryPromoteResult, MemoryReviewList, MemoryShadowRun, MemoryStatus } from '../../../shared/types'
 
 export interface SearchEnvelope {
   items: Array<{ item: Record<string, unknown>; db: string; alsoIn?: Array<{ db: string; id: string }> }>
@@ -81,6 +81,8 @@ interface MemoryState {
   detailHistory: unknown
   review: MemoryReviewList | null
   preview: MemoryPromotePreview | null
+  approvedCandidate: { id: number; revision: number; category: string; key: string } | null
+  promotionResult: MemoryPromoteResult | null
   shadow: MemoryShadowRun[] | null
   overrideBy: string
   overrideReason: string
@@ -110,6 +112,7 @@ interface MemoryState {
   refreshReview: () => Promise<void>
   decide: (id: number, approved: boolean, expectedRevision: number) => Promise<void>
   dryRun: (id: number) => Promise<void>
+  promote: (id: number, expectedRevision: number) => Promise<boolean>
   refreshShadow: () => Promise<void>
   clearError: () => void
 }
@@ -160,6 +163,8 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
   detailHistory: null,
   review: null,
   preview: null,
+  approvedCandidate: null,
+  promotionResult: null,
   shadow: null,
   overrideBy: '',
   overrideReason: '',
@@ -395,6 +400,8 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
   decide: async (id, approved, expectedRevision) => {
     const { overrideBy, overrideReason } = get()
     const my = seq
+    const found = get().review?.queued.find((r) => r.id === id)
+    const approvedCandidate = approved && found ? { id, revision: expectedRevision, category: found.category, key: found.key } : null
     try {
       await window.api.memoryReviewDecide({
         id,
@@ -406,7 +413,7 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
       if (my !== seq) return
       const list = await window.api.memoryReviewList()
       if (my !== seq) return
-      set({ review: list, preview: null, error: null })
+      set({ review: list, preview: null, approvedCandidate, error: null })
       if (approved) await get().dryRun(id)
     } catch (e) {
       if (my !== seq) return
@@ -419,10 +426,26 @@ export const useMemoryStore = create<MemoryState>((set, get) => ({
     try {
       const preview = await window.api.memoryPromoteDryRun(id)
       if (my !== seq) return
-      set({ preview, error: null })
+      set({ preview, promotionResult: null, error: null })
     } catch (e) {
       if (my !== seq) return
       set({ preview: null, error: err(e) })
+    }
+  },
+
+  promote: async (id, expectedRevision) => {
+    const my = seq
+    try {
+      const res = await window.api.memoryPromote(id, expectedRevision)
+      if (my !== seq) return false
+      const list = await window.api.memoryReviewList()
+      if (my !== seq) return false
+      set({ review: list, promotionResult: res, preview: null, approvedCandidate: null, error: null })
+      return res.ok
+    } catch (e) {
+      if (my !== seq) return false
+      set({ error: err(e) })
+      return false
     }
   },
 

@@ -9,7 +9,7 @@ import {
   type AdmissionVerdict,
 } from './admission'
 
-export type ReviewStatus = 'queued' | 'approved' | 'rejected' | 'expired';
+export type ReviewStatus = 'queued' | 'approved' | 'rejected' | 'expired' | 'promoted';
 
 export interface StoredCandidate {
   id: number
@@ -56,7 +56,7 @@ const DEFAULT_PURGE_AFTER_MS = 90 * 24 * 3600 * 1000
 const DEFAULT_MAX_BYTES = 50 * 1024 * 1024
 const PROMOTION_KEEP_NEWEST = 500
 const DEFAULT_PROMOTION_TTL_MS = 90 * 24 * 3600 * 1000
-const SCHEMA_VERSION = 2
+const SCHEMA_VERSION = 3
 
 // Payload column contracts: the byte ledger, backfill and the independent
 // SQL check derive from exactly these lists.
@@ -114,8 +114,10 @@ const PROMOTION_COLUMNS: Array<[string, string]> = [
   ['key', 'TEXT NOT NULL'],
   ['snapshot', 'TEXT NOT NULL'],
   ['status', "TEXT NOT NULL DEFAULT 'recorded'"],
+  ['error', "TEXT NOT NULL DEFAULT ''"],
   ['payload_bytes', 'INTEGER NOT NULL DEFAULT 0'],
   ['created_at', 'INTEGER NOT NULL'],
+  ['settled_at', 'INTEGER'],
 ]
 
 const COLUMNS = [
@@ -503,11 +505,11 @@ export class ReviewStore {
       .prepare(`DELETE FROM candidates WHERE status = 'expired' AND created_at < ?`)
       .run(beforeUnixMs)
     const freedPromotions = this.storedPayloadSum(
-      `SELECT COALESCE(SUM(payload_bytes), 0) AS n FROM promotions WHERE created_at < ?`,
+      `SELECT COALESCE(SUM(payload_bytes), 0) AS n FROM promotions WHERE created_at < ? AND status NOT IN ('intent', 'dispatched', 'indeterminate')`,
       [beforeUnixMs],
     )
     const res3 = this.db
-      .prepare(`DELETE FROM promotions WHERE created_at < ?`)
+      .prepare(`DELETE FROM promotions WHERE created_at < ? AND status NOT IN ('intent', 'dispatched', 'indeterminate')`)
       .run(beforeUnixMs)
     const n = Number(res.changes) + Number(res2.changes) + Number(res3.changes)
     this.releasePayload(freedCandidates + freedPromotions)
@@ -528,6 +530,7 @@ export class ReviewStore {
     category: string
     key: string
     snapshot: string
+    status?: string
   }): void {
     const hits = [
       ...scanField(input.snapshot),
@@ -540,15 +543,20 @@ export class ReviewStore {
     if (hits.length > 0) {
       throw new Error(`promotion refused: secrets detected (${hits.join(',')})`)
     }
+    const status = input.status ?? 'recorded'
     const payload = payloadBytesOf([input.operationId, input.fromDb, input.toDb, input.category, input.key, input.snapshot])
     this.db.exec('BEGIN IMMEDIATE')
     try {
       this.db
         .prepare(
           `INSERT INTO promotions (operation_id, from_db, to_db, category, key, snapshot, status, created_at, payload_bytes)
-           VALUES (?, ?, ?, ?, ?, ?, 'recorded', ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(operation_id) DO UPDATE SET
+             status = excluded.status,
+             error = '',
+             created_at = excluded.created_at`,
         )
-        .run(input.operationId, input.fromDb, input.toDb, input.category, input.key, input.snapshot, Date.now(), payload)
+        .run(input.operationId, input.fromDb, input.toDb, input.category, input.key, input.snapshot, status, Date.now(), payload)
       this.chargePayload(payload)
       this.purgeExpiredLocked(Date.now() - this.purgeAfterMs)
       this.trimPromotions()
@@ -562,6 +570,98 @@ export class ReviewStore {
       }
       throw e
     }
+  }
+
+  recordPromotionIntent(input: {
+    operationId: string
+    fromDb: string
+    toDb: string
+    category: string
+    key: string
+    snapshot: string
+  }): 'intent' | 'verified' {
+    const hits = [
+      ...scanField(input.snapshot),
+      ...scanField(input.key),
+      ...scanField(input.category),
+      ...scanField(input.fromDb),
+      ...scanField(input.toDb),
+      ...scanField(input.operationId),
+    ]
+    if (hits.length > 0) {
+      throw new Error(`promotion refused: secrets detected (${hits.join(',')})`)
+    }
+
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const existing = this.db
+        .prepare(`SELECT status, error FROM promotions WHERE operation_id = ?`)
+        .get(input.operationId) as { status?: string; error?: string } | undefined
+
+      if (existing) {
+        if (existing.status === 'verified') {
+          this.db.exec('COMMIT')
+          return 'verified'
+        }
+        if (existing.status === 'dispatched') {
+          throw new Error(`promotion '${input.operationId}' is currently dispatched in-flight; duplicate dispatch blocked`)
+        }
+        if (existing.status === 'indeterminate') {
+          throw new Error(`promotion '${input.operationId}' is in indeterminate state, manual resolution required`)
+        }
+        if (existing.status === 'failed' || existing.status === 'intent') {
+          this.db
+            .prepare(`UPDATE promotions SET status = 'intent', error = '', created_at = ? WHERE operation_id = ? AND status = ?`)
+            .run(Date.now(), input.operationId, existing.status)
+          this.db.exec('COMMIT')
+          return 'intent'
+        }
+      }
+
+      const payload = payloadBytesOf([input.operationId, input.fromDb, input.toDb, input.category, input.key, input.snapshot])
+      this.db
+        .prepare(
+          `INSERT INTO promotions (operation_id, from_db, to_db, category, key, snapshot, status, created_at, payload_bytes)
+           VALUES (?, ?, ?, ?, ?, ?, 'intent', ?, ?)`,
+        )
+        .run(input.operationId, input.fromDb, input.toDb, input.category, input.key, input.snapshot, Date.now(), payload)
+      this.chargePayload(payload)
+      this.purgeExpiredLocked(Date.now() - this.purgeAfterMs)
+      this.trimPromotions()
+      this.trimPromotionsByAge(Date.now())
+      this.db.exec('COMMIT')
+      return 'intent'
+    } catch (e) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {
+        // already rolled back
+      }
+      throw e
+    }
+  }
+
+  updatePromotionState(
+    operationId: string,
+    state: 'dispatched' | 'verified' | 'failed' | 'indeterminate',
+    expectedCurrentState?: 'intent' | 'dispatched' | 'failed',
+    error: string = '',
+  ): boolean {
+    const settled = state === 'verified' || state === 'failed' ? Date.now() : null
+    let query = `UPDATE promotions SET status = ?, error = ?, settled_at = ? WHERE operation_id = ?`
+    const params: (string | number | null)[] = [state, error, settled, operationId]
+    if (expectedCurrentState) {
+      query += ` AND status = ?`
+      params.push(expectedCurrentState)
+    }
+    const res = this.db.prepare(query).run(...params)
+    return Number(res.changes) > 0
+  }
+
+  markCandidatePromoted(candidateId: number): void {
+    this.db
+      .prepare(`UPDATE candidates SET status = 'promoted', decided_at = ? WHERE id = ?`)
+      .run(Date.now(), candidateId)
   }
 
   getPromotion(operationId: string): Record<string, unknown> | null {
@@ -578,15 +678,16 @@ export class ReviewStore {
   private trimPromotions(): void {
     const freed = this.storedPayloadSum(
       `SELECT COALESCE(SUM(payload_bytes), 0) AS n FROM promotions
-       WHERE operation_id NOT IN (
-         SELECT operation_id FROM promotions ORDER BY created_at DESC, operation_id DESC LIMIT ?
+       WHERE status NOT IN ('intent', 'dispatched', 'indeterminate') AND operation_id NOT IN (
+         SELECT operation_id FROM promotions WHERE status NOT IN ('intent', 'dispatched', 'indeterminate') ORDER BY created_at DESC, operation_id DESC LIMIT ?
        )`,
       [this.promotionKeepNewest],
     )
     this.db
       .prepare(
-        `DELETE FROM promotions WHERE operation_id NOT IN (
-           SELECT operation_id FROM promotions ORDER BY created_at DESC, operation_id DESC LIMIT ?
+        `DELETE FROM promotions
+         WHERE status NOT IN ('intent', 'dispatched', 'indeterminate') AND operation_id NOT IN (
+           SELECT operation_id FROM promotions WHERE status NOT IN ('intent', 'dispatched', 'indeterminate') ORDER BY created_at DESC, operation_id DESC LIMIT ?
          )`,
       )
       .run(this.promotionKeepNewest)
@@ -597,11 +698,11 @@ export class ReviewStore {
    * promotions go on every promotion write, ledger-adjusted. */
   private trimPromotionsByAge(now: number): void {
     const freed = this.storedPayloadSum(
-      `SELECT COALESCE(SUM(payload_bytes), 0) AS n FROM promotions WHERE created_at < ?`,
+      `SELECT COALESCE(SUM(payload_bytes), 0) AS n FROM promotions WHERE created_at < ? AND status NOT IN ('intent', 'dispatched', 'indeterminate')`,
       [now - this.promotionTtlMs],
     )
     this.db
-      .prepare(`DELETE FROM promotions WHERE created_at < ?`)
+      .prepare(`DELETE FROM promotions WHERE created_at < ? AND status NOT IN ('intent', 'dispatched', 'indeterminate')`)
       .run(now - this.promotionTtlMs)
     this.releasePayload(freed)
   }

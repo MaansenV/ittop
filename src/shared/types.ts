@@ -38,6 +38,8 @@ export interface AppSettings {
   // Embedded memory vaults (Perseus fork wiring). Default-off: while false
   // no vault child is spawned and no DB/key file is created.
   memoryVaultEnabled: boolean
+  // Terminal MCP Bridge: enables local MCP endpoint for terminals. Default false (explicit opt-in).
+  terminalMcpEnabled?: boolean
 }
 
 /** The subset of AppSettings worth offering to restore from someone else's export — pure
@@ -140,6 +142,7 @@ export const IPC = {
   memoryReviewList: 'memory:reviewList',
   memoryReviewDecide: 'memory:reviewDecide',
   memoryPromoteDryRun: 'memory:promoteDryRun',
+  memoryPromote: 'memory:promote',
   memoryShadowRuns: 'memory:shadowRuns',
 
   appGetVersion: 'app:getVersion',
@@ -203,6 +206,16 @@ export interface MemoryPromotePreview {
   triggers: string[]
   sourceRef: string
   note: string
+}
+
+export interface MemoryPromoteResult {
+  ok: boolean
+  operationId: string
+  status: 'verified' | 'failed' | 'indeterminate'
+  targetDb: string
+  category: string
+  key: string
+  error?: string
 }
 
 export interface MemoryShadowRun {

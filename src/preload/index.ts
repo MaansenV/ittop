@@ -12,6 +12,7 @@ import type {
   MemoryBrowseInput,
   MemoryDecideInput,
   MemoryPromotePreview,
+  MemoryPromoteResult,
   MemoryReviewList,
   MemoryShadowRun,
   MemoryStatus,
@@ -160,6 +161,8 @@ const api = {
     ipcRenderer.invoke(IPC.memoryReviewDecide, input),
   memoryPromoteDryRun: (id: number): Promise<MemoryPromotePreview> =>
     ipcRenderer.invoke(IPC.memoryPromoteDryRun, id),
+  memoryPromote: (id: number, expectedRevision: number): Promise<MemoryPromoteResult> =>
+    ipcRenderer.invoke(IPC.memoryPromote, id, expectedRevision),
   memoryShadowRuns: (limit?: number): Promise<MemoryShadowRun[]> =>
     ipcRenderer.invoke(IPC.memoryShadowRuns, limit),
   checkForUpdates: (): Promise<void> => ipcRenderer.invoke(IPC.appCheckForUpdates),

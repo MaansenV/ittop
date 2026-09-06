@@ -578,7 +578,7 @@ describe('ReviewStore', () => {
       const meta = new DatabaseSync(file, { readOnly: true })
       try {
         const v = meta.prepare(`SELECT value FROM schema_meta WHERE key = 'schema_version'`).get() as { value: number }
-        expect(v.value).toBe(2)
+        expect(v.value).toBe(3)
       } finally {
         meta.close()
       }
@@ -642,7 +642,7 @@ describe('ReviewStore', () => {
       const meta = new DatabaseSync(file, { readOnly: true })
       try {
         const mv = meta.prepare(`SELECT value FROM schema_meta WHERE key = 'schema_version'`).get() as { value: number }
-        expect(mv.value).toBe(2)
+        expect(mv.value).toBe(3)
         const sum = meta
           .prepare(
             `SELECT COALESCE(SUM(
@@ -712,6 +712,53 @@ describe('ReviewStore', () => {
       } finally {
         db.close()
       }
+    } finally {
+      store.close()
+    }
+  })
+
+  it('tracks promotion intent, state updates and prevents indeterminate duplicate dispatch', () => {
+    const file = tempFile()
+    const store = new ReviewStore({ file })
+    try {
+      const intent = store.recordPromotionIntent({
+        operationId: 'op-1',
+        fromDb: 'workspace:11111111-1111-4111-8111-111111111111',
+        toDb: 'workspace:11111111-1111-4111-8111-111111111111',
+        category: 'decision',
+        key: 'k1',
+        snapshot: '{"content":"test"}',
+      })
+      expect(intent).toBe('intent')
+      expect(store.getPromotion('op-1')?.status).toBe('intent')
+
+      store.updatePromotionState('op-1', 'dispatched')
+      expect(store.getPromotion('op-1')?.status).toBe('dispatched')
+
+      store.updatePromotionState('op-1', 'verified')
+      expect(store.getPromotion('op-1')?.status).toBe('verified')
+      expect(
+        store.recordPromotionIntent({
+          operationId: 'op-1',
+          fromDb: 'workspace:11111111-1111-4111-8111-111111111111',
+          toDb: 'workspace:11111111-1111-4111-8111-111111111111',
+          category: 'decision',
+          key: 'k1',
+          snapshot: '{"content":"test"}',
+        }),
+      ).toBe('verified')
+
+      store.updatePromotionState('op-1', 'indeterminate', undefined, 'network timeout')
+      expect(() =>
+        store.recordPromotionIntent({
+          operationId: 'op-1',
+          fromDb: 'workspace:11111111-1111-4111-8111-111111111111',
+          toDb: 'workspace:11111111-1111-4111-8111-111111111111',
+          category: 'decision',
+          key: 'k1',
+          snapshot: '{"content":"test"}',
+        }),
+      ).toThrow(/indeterminate/)
     } finally {
       store.close()
     }

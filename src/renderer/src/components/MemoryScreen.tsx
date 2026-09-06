@@ -579,15 +579,38 @@ export default function MemoryScreen({
                     onChange={(e) => s.setOverride(s.overrideBy, e.target.value)}
                   />
                 </div>
-                <h4>Promotion preview (dry run — no vault write)</h4>
+                <h4>Promotion preview</h4>
                 <pre>{asJson(s.preview)}</pre>
               </>
             )}
             {s.preview && !selectedReview && (
               <>
-                <div className="memory-hint">Approved — the queue no longer lists it. Preview:</div>
+                <div className="memory-hint">
+                  {s.approvedCandidate
+                    ? `Approved candidate #${s.approvedCandidate.id} (${s.approvedCandidate.category} / ${s.approvedCandidate.key}) — ready to promote:`
+                    : 'Approved — ready for promotion:'}
+                </div>
                 <pre>{asJson(s.preview)}</pre>
               </>
+            )}
+            {s.preview && (s.approvedCandidate || selectedReview) && (
+              <div style={{ marginTop: 12 }}>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    const target = s.approvedCandidate ?? selectedReview
+                    if (target) void s.promote(target.id, target.revision)
+                  }}
+                >
+                  Promote into vault
+                </button>
+              </div>
+            )}
+            {s.promotionResult && (
+              <div className="memory-hint" style={{ marginTop: 12 }}>
+                Promotion {s.promotionResult.status}: <strong>{s.promotionResult.operationId}</strong>
+                {s.promotionResult.error ? ` — Error: ${s.promotionResult.error}` : ''}
+              </div>
             )}
           </div>
         </div>

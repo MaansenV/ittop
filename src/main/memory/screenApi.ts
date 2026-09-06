@@ -1,12 +1,13 @@
 import { admit, type AdmissionCandidate } from './admission'
 import { existsSync } from 'node:fs'
-import { MemoryBroker } from './broker'
+import { MemoryBroker, type MemoryPromoteResult } from './broker'
 import { SessionRegistry } from './capabilities'
 import { GLOBAL_DB_ID, pathsForDb, workspaceDbId } from './paths'
 import { ShadowEval, type ShadowRunRow } from './shadow'
 import type { MemoryPromotePreview, MemoryReviewRow } from '../../shared/types'
 import { ReviewStore, reviewStoreFile, type ReviewRecord } from './reviewStore'
 import type { VaultManager } from './vaultManager'
+import { McpBridgeServer, type McpBridgeEndpoint } from './mcpBridge'
 
 export interface BrowseInput {
   /** 'workspace' = active workspace DB, 'global' = shared DB (separate choice). */
@@ -40,15 +41,18 @@ export interface DecideInput {
 // vault promotion is a dry-run preview — the write itself stays locked
 // until the migration phase.
 export class MemoryScreenApi {
-  private readonly sessions = new SessionRegistry()
+  private readonly sessions: SessionRegistry
   private readonly liveHandles = new Set<string>()
   private broker: MemoryBroker | null = null
   private brokerOf: VaultManager | null = null
   private review: ReviewStore | null = null
   private shadow: ShadowEval | null = null
   private closed = false
+  private terminalBridges = new Map<string, McpBridgeEndpoint>()
 
-  constructor(private readonly deps: ScreenApiDeps) {}
+  constructor(private readonly deps: ScreenApiDeps) {
+    this.sessions = new SessionRegistry(() => !this.deps.isEnabled())
+  }
 
   private gate(): void {
     if (this.closed) throw new Error('memory screen closed')
@@ -106,7 +110,7 @@ export class MemoryScreenApi {
     const manager = this.deps.getManager()
     if (!manager) throw new Error('memory vault not ready')
     if (!this.broker || this.brokerOf !== manager) {
-      this.broker = new MemoryBroker(manager, this.sessions)
+      this.broker = new MemoryBroker(manager, this.sessions, { allowLiveWrites: true })
       this.brokerOf = manager
     }
     return this.broker
@@ -326,10 +330,121 @@ export class MemoryScreenApi {
     }
   }
 
+  async promote(id: number, expectedRevision: number): Promise<MemoryPromoteResult> {
+    this.gate()
+    const store = this.reviews()
+    const record = store.get(id)
+    if (!record) throw new Error(`review candidate ${id} not found`)
+    if (record.statusState === 'promoted') {
+      if (record.revision !== expectedRevision) {
+        throw new Error(`candidate ${id} revision mismatch: expected ${expectedRevision}, found ${record.revision}`)
+      }
+      const operationId = `${record.id}:${record.revision}:${record.db}`
+      const existing = store.getPromotion(operationId)
+      if (existing && existing.status === 'verified') {
+        return {
+          ok: true,
+          operationId,
+          status: 'verified',
+          targetDb: record.db,
+          category: record.category,
+          key: record.key,
+        }
+      }
+    }
+    if (record.statusState !== 'approved') {
+      throw new Error(`candidate ${id} is ${record.statusState}, only approved candidates can be promoted`)
+    }
+    if (record.revision !== expectedRevision) {
+      throw new Error(`candidate ${id} revision mismatch: expected ${expectedRevision}, found ${record.revision}`)
+    }
+
+    const workspaceId = record.db.startsWith('workspace:') ? record.db.slice('workspace:'.length) : 'global'
+    const handle = this.sessions.open(workspaceId === 'global' ? '11111111-1111-4111-8111-111111111111' : workspaceId, {
+      purpose: 'screen_promote',
+      mayPromote: true,
+      mayWriteWorkspace: true,
+      mayWriteGlobal: workspaceId === 'global',
+    })
+    this.liveHandles.add(handle)
+    try {
+      const broker = this.brokerFor()
+      const result = await broker.promote(handle, record, store)
+      this.gate()
+      return result
+    } finally {
+      this.sessions.revoke(handle)
+      this.sessions.close(handle)
+      this.liveHandles.delete(handle)
+    }
+  }
+
+  async createTerminalBridge(workspaceId: string, terminalId: string): Promise<McpBridgeEndpoint | null> {
+    if (this.closed || !this.deps.isEnabled()) return null
+    const manager = this.deps.getManager()
+    if (!manager) return null
+
+    await this.closeTerminalBridge(terminalId)
+
+    const sessionHandle = this.sessions.open(workspaceId, {
+      purpose: 'terminal_mcp',
+      includeGlobal: true,
+      mayWriteWorkspace: false,
+      mayWriteGlobal: false,
+      mayPromote: false,
+    })
+    this.liveHandles.add(sessionHandle)
+
+    const broker = this.brokerFor()
+    const bridge = new McpBridgeServer({
+      broker,
+      sessions: this.sessions,
+      workspaceId,
+      sessionHandle,
+    })
+
+    try {
+      const socketPath = await bridge.start()
+      const endpoint: McpBridgeEndpoint = {
+        socketPath,
+        sessionHandle,
+        close: async () => {
+          await bridge.close()
+          this.sessions.revoke(sessionHandle)
+          this.sessions.close(sessionHandle)
+          this.liveHandles.delete(sessionHandle)
+        },
+      }
+      this.terminalBridges.set(terminalId, endpoint)
+      return endpoint
+    } catch {
+      this.sessions.revoke(sessionHandle)
+      this.sessions.close(sessionHandle)
+      this.liveHandles.delete(sessionHandle)
+      return null
+    }
+  }
+
+  async closeTerminalBridge(terminalId: string): Promise<void> {
+    const existing = this.terminalBridges.get(terminalId)
+    if (existing) {
+      this.terminalBridges.delete(terminalId)
+      // Synchronously revoke session first before awaiting bridge close
+      this.sessions.revoke(existing.sessionHandle)
+      this.sessions.close(existing.sessionHandle)
+      this.liveHandles.delete(existing.sessionHandle)
+      await existing.close().catch(() => undefined)
+    }
+  }
+
   close(): void {
     // Irreversible: later calls fail closed even if re-enabled — a fresh
     // instance is required (shutdown semantics, mirrors the service).
     this.closed = true
+    for (const bridge of this.terminalBridges.values()) {
+      void bridge.close().catch(() => undefined)
+    }
+    this.terminalBridges.clear()
     this.onDisabled()
     this.review?.close()
     this.review = null
